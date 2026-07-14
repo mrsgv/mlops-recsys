@@ -1,0 +1,13 @@
+# CI/CD pipeline — TBD (lint + tests on push/PR)
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # TODO: setup python, install deps, run tests

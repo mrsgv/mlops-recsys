@@ -1,0 +1,31 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Data & models (tracked via DVC, not git)
+data/raw/*
+data/processed/*
+models/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!models/.gitkeep
+
+# MLflow / experiment artifacts
+mlruns/
+mlflow.db
+
+# Airflow local runtime
+airflow/logs/
+airflow/*.db
+airflow/*.cfg
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/

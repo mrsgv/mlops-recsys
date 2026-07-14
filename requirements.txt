@@ -1,0 +1,2 @@
+# Dependencies — TBD, add as we build each component.
+# Likely: pandas, scikit-learn, mlflow, dvc, fastapi, uvicorn, pyspark, apache-airflow
