@@ -1,0 +1,5 @@
+outs:
+- md5: 5f76d4fdb4399723ecf93896cb142cb3
+  size: 8906638
+  hash: md5
+  path: video_games.parquet

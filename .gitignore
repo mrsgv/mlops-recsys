@@ -12,9 +12,15 @@ env/
 data/raw/*
 data/processed/*
 models/*
+
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !models/.gitkeep
+
+# DVC pointer files
+!data/raw/*.dvc
+!data/processed/*.dvc
+!models/*.dvc
 
 # MLflow / experiment artifacts
 mlruns/

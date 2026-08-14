@@ -1,0 +1,6 @@
+outs:
+- md5: 587794e1c04bccd5ff6810500c3ff0df.dir
+  size: 96300768
+  nfiles: 6
+  hash: md5
+  path: svd
