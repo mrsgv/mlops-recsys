@@ -110,6 +110,10 @@ pip install mlflow==3.1.4 "google-cloud-storage>=2.19,<4"
 This **downgrades pandas 3.0.5 → 2.3.3** because MLflow requires `pandas<3`. That is
 intentional. Do not reinstall pandas 3; it breaks MLflow.
 
+Note that venv activation lasts only for the current terminal. Every new terminal in
+which you run Python needs the `activate` command again — unlike the Step 2 login, which
+is permanent. Check with `which python`; it should point inside `.venv`.
+
 ---
 
 ## Step 5 — Start the proxy
