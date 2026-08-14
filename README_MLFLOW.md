@@ -6,6 +6,10 @@ Cloud, so every team member logs runs to **one shared leaderboard** instead of a
 
 Everyone trains on their own machine. The server only records results.
 
+> **Just want to get set up?** [README_MLFLOW_QUICKSTART.md](README_MLFLOW_QUICKSTART.md)
+> is the same steps as literal copy-paste commands. This document explains the how and
+> why behind them.
+
 ## Architecture
 
 ```
