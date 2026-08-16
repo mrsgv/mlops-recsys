@@ -1,8 +1,15 @@
+import os
 import time
+
 import numpy as np
 import pandas as pd
 from scipy.sparse import csr_matrix
 from scipy.sparse.linalg import svds
+
+from src.evaluation.split import (
+    chronological_train_test_split,
+    validate_split,
+)
 
 
 DATA_PATH = "data/processed/video_games.parquet"
@@ -24,19 +31,19 @@ def main():
     print(f"Products: {df['item_idx'].nunique():,}")
 
     # ---------------------------------------------------------
-    # Chronological train/test split
-    # Last interaction of every user is held out for evaluation.
+    # Common chronological train/test split
     # ---------------------------------------------------------
 
-    print("\n=== Creating Train/Test Split ===")
+    print("\n=== Creating Common Chronological Split ===")
 
-    df = df.sort_values(["user_idx", "timestamp"])
+    train, test = chronological_train_test_split(df)
 
-    test = df.groupby("user_idx").tail(1)
-    train = df.drop(test.index)
+    validate_split(train, test)
 
     print(f"Training interactions: {len(train):,}")
     print(f"Test interactions: {len(test):,}")
+    print(f"Training users: {train['user_idx'].nunique():,}")
+    print(f"Test users: {test['user_idx'].nunique():,}")
 
     # ---------------------------------------------------------
     # Build training user-item matrix
@@ -50,7 +57,10 @@ def main():
     matrix = csr_matrix(
         (
             train["rating"].values,
-            (train["user_idx"].values, train["item_idx"].values),
+            (
+                train["user_idx"].values,
+                train["item_idx"].values,
+            ),
         ),
         shape=(n_users, n_items),
     )
@@ -71,10 +81,13 @@ def main():
 
     start_time = time.time()
 
-    U, sigma, Vt = svds(matrix.astype(float), k=N_FACTORS)
+    U, sigma, Vt = svds(
+        matrix.astype(float),
+        k=N_FACTORS,
+    )
 
-    # svds returns singular values in ascending order.
-    # Reverse them so largest factors come first.
+    # scipy.sparse.linalg.svds returns singular values in ascending
+    # order. Reverse them so the largest factors come first.
     order = np.argsort(sigma)[::-1]
 
     sigma = sigma[order]
@@ -125,15 +138,17 @@ def main():
 
         top_indices = np.argpartition(
             user_scores,
-            -TOP_K
+            -TOP_K,
         )[-TOP_K:]
 
         top_indices = top_indices[
             np.argsort(user_scores[top_indices])[::-1]
         ]
 
-        for rank, item_idx in enumerate(top_indices, start=1):
-
+        for rank, item_idx in enumerate(
+            top_indices,
+            start=1,
+        ):
             rows.append(
                 {
                     "user_idx": user_idx,
@@ -148,12 +163,10 @@ def main():
     recommendations = pd.DataFrame(rows)
 
     # ---------------------------------------------------------
-    # Save factors
+    # Save model factors
     # ---------------------------------------------------------
 
     print("\n=== Saving SVD Factors ===")
-
-    import os
 
     os.makedirs(MODEL_DIR, exist_ok=True)
     os.makedirs("data/predictions", exist_ok=True)
@@ -170,15 +183,12 @@ def main():
 
     recommendations.to_parquet(
         RECOMMENDATIONS_PATH,
-        index=False
+        index=False,
     )
 
     print("\n=== Saved ===")
     print(f"Model: {MODEL_DIR}/")
-    print(
-        f"Recommendations: "
-        f"{RECOMMENDATIONS_PATH}"
-    )
+    print(f"Recommendations: {RECOMMENDATIONS_PATH}")
 
     print("\n=== Sample Recommendations ===")
 

@@ -1,5 +1,10 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
+
+from src.evaluation.split import (
+    chronological_train_test_split,
+    validate_split,
+)
 
 
 DATA_PATH = "data/processed/video_games.parquet"
@@ -20,15 +25,14 @@ def main():
     print(f"Products: {df['item_idx'].nunique():,}")
 
     # ---------------------------------------------------------
-    # Recreate the exact chronological test split
-    # used by the SVD baseline.
+    # Common chronological evaluation split
     # ---------------------------------------------------------
 
-    print("\n=== Creating Evaluation Split ===")
+    print("\n=== Creating Common Evaluation Split ===")
 
-    df = df.sort_values(["user_idx", "timestamp"])
-
-    test = df.groupby("user_idx").tail(1)
+    # Create and validate the common split.
+    train, test = chronological_train_test_split(df)
+    validate_split(train, test)
 
     print(f"Test interactions: {len(test):,}")
     print(f"Test users: {test['user_idx'].nunique():,}")
@@ -54,7 +58,7 @@ def main():
     )
 
     # ---------------------------------------------------------
-    # Convert recommendations into a dictionary
+    # Convert recommendations into dictionary
     # ---------------------------------------------------------
 
     recommendation_map = (
@@ -83,9 +87,7 @@ def main():
         if user_idx not in recommendation_map:
             continue
 
-        recommended = recommendation_map[user_idx][
-            :TOP_K
-        ]
+        recommended = recommendation_map[user_idx][:TOP_K]
 
         users_evaluated += 1
 
@@ -104,20 +106,18 @@ def main():
     # ---------------------------------------------------------
 
     if users_evaluated == 0:
-
         print("No users could be evaluated.")
         return
 
     hit_rate = hits / users_evaluated
 
-    # With one held-out relevant item per user,
+    # One held-out relevant item per user:
+    #
     # Precision@K = Hit Rate@K / K
+    # Recall@K    = Hit Rate@K
+
     precision = hit_rate / TOP_K
-
-    # With one held-out relevant item per user,
-    # Recall@K = Hit Rate@K
     recall = hit_rate
-
     ndcg = ndcg_sum / users_evaluated
 
     # ---------------------------------------------------------
@@ -126,9 +126,7 @@ def main():
 
     print("\n=== SVD Baseline Results ===")
 
-    print(
-        f"Users evaluated: {users_evaluated:,}"
-    )
+    print(f"Users evaluated: {users_evaluated:,}")
 
     print(
         f"Precision@{TOP_K}: "
@@ -170,7 +168,7 @@ def main():
 
     results.to_csv(
         OUTPUT_PATH,
-        index=False
+        index=False,
     )
 
     print("\n=== Saved ===")
