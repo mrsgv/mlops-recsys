@@ -106,3 +106,5 @@ voluptuous==0.16.0
 wcwidth==0.8.2
 yarl==1.24.5
 zc.lockfile==4.0
+mlflow==3.1.4
+google-cloud-storage>=2.19,<4
