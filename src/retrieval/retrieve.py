@@ -25,8 +25,7 @@ class RecommendationRetriever:
     """
     High-level retrieval service.
 
-    Converts FAISS item_idx results into the original
-    parent_asin identifiers.
+    Converts FAISS item_idx results into parent_asin IDs.
     """
 
     def __init__(
@@ -54,8 +53,8 @@ class RecommendationRetriever:
             self.item_mapping
         ) != self.retriever.num_items:
             raise ValueError(
-                "Item mapping and FAISS index contain "
-                "different numbers of items."
+                "Item mapping and FAISS index "
+                "contain different numbers of items."
             )
 
         expected_item_ids = list(
@@ -65,8 +64,9 @@ class RecommendationRetriever:
         )
 
         actual_item_ids = (
-            self.item_mapping["item_idx"]
-            .tolist()
+            self.item_mapping[
+                "item_idx"
+            ].tolist()
         )
 
         if actual_item_ids != expected_item_ids:
@@ -80,9 +80,7 @@ class RecommendationRetriever:
         query_vector: np.ndarray,
         k: int = 10,
     ) -> pd.DataFrame:
-        """
-        Retrieve Top-K recommendations from a query vector.
-        """
+        """Retrieve Top-K recommendations."""
         item_ids, scores = (
             self.retriever.search(
                 query_vector,

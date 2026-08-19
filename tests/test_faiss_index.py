@@ -1,6 +1,6 @@
+import tempfile
 import unittest
 from pathlib import Path
-import tempfile
 
 import numpy as np
 
@@ -22,61 +22,69 @@ class TestFaissRetriever(unittest.TestCase):
             dtype=np.float32,
         )
 
-    def test_add_and_search(self):
+    def test_raw_inner_product(self):
         retriever = FaissRetriever(
-            dimension=3
+            dimension=3,
+            normalize=False,
+        )
+
+        vectors = np.array(
+            [
+                [3.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+            ],
+            dtype=np.float32,
         )
 
         retriever.add(
-            self.vectors
+            vectors
         )
 
-        item_ids, scores = (
-            retriever.search(
-                np.array(
-                    [1.0, 0.0, 0.0],
-                    dtype=np.float32,
-                ),
-                k=2,
-            )
-        )
-
-        self.assertEqual(
-            len(item_ids),
-            2,
+        ids, scores = retriever.search(
+            np.array(
+                [1.0, 0.0, 0.0],
+                dtype=np.float32,
+            ),
+            k=2,
         )
 
         self.assertEqual(
-            item_ids[0],
-            0,
+            ids,
+            [0, 1],
         )
 
-        self.assertGreaterEqual(
+        self.assertAlmostEqual(
             scores[0],
-            scores[1],
+            3.0,
+            places=5,
         )
 
-    def test_vectors_are_normalized(self):
+        self.assertAlmostEqual(
+            scores[1],
+            1.0,
+            places=5,
+        )
+
+    def test_normalized_inner_product(self):
         retriever = FaissRetriever(
-            dimension=3
+            dimension=3,
+            normalize=True,
         )
 
         retriever.add(
             self.vectors
         )
 
-        item_ids, scores = (
-            retriever.search(
-                np.array(
-                    [2.0, 0.0, 0.0],
-                    dtype=np.float32,
-                ),
-                k=1,
-            )
+        ids, scores = retriever.search(
+            np.array(
+                [2.0, 0.0, 0.0],
+                dtype=np.float32,
+            ),
+            k=1,
         )
 
         self.assertEqual(
-            item_ids[0],
+            ids[0],
             0,
         )
 
@@ -97,10 +105,13 @@ class TestFaissRetriever(unittest.TestCase):
         )
 
         retriever = FaissRetriever(
-            dimension=3
+            dimension=3,
+            normalize=False,
         )
 
-        retriever.add(vectors)
+        retriever.add(
+            vectors
+        )
 
         self.assertEqual(
             retriever.num_items,
@@ -112,40 +123,47 @@ class TestFaissRetriever(unittest.TestCase):
             1,
         )
 
-    def test_zero_query_vector_rejected(self):
+    def test_dimension_mismatch(self):
         retriever = FaissRetriever(
-            dimension=3
+            dimension=3,
+        )
+
+        with self.assertRaises(
+            ValueError
+        ):
+            retriever.add(
+                np.ones(
+                    (2, 4),
+                    dtype=np.float32,
+                )
+            )
+
+    def test_empty_vectors_rejected(self):
+        retriever = FaissRetriever(
+            dimension=3,
+        )
+
+        with self.assertRaises(
+            ValueError
+        ):
+            retriever.add(
+                np.empty(
+                    (0, 3),
+                    dtype=np.float32,
+                )
+            )
+
+    def test_save_and_load_preserves_normalization_mode(
+        self
+    ):
+        retriever = FaissRetriever(
+            dimension=3,
+            normalize=False,
         )
 
         retriever.add(
             self.vectors
         )
-
-        with self.assertRaises(ValueError):
-            retriever.search(
-                np.zeros(
-                    3,
-                    dtype=np.float32,
-                ),
-                k=1,
-            )
-
-    def test_save_and_load(self):
-        retriever = FaissRetriever(
-            dimension=3
-        )
-
-        vectors = np.vstack(
-            [
-                self.vectors,
-                np.zeros(
-                    (1, 3),
-                    dtype=np.float32,
-                ),
-            ]
-        )
-
-        retriever.add(vectors)
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -173,55 +191,32 @@ class TestFaissRetriever(unittest.TestCase):
                 )
             )
 
-            item_ids, scores = (
-                loaded.search(
-                    np.array(
-                        [1.0, 0.0, 0.0],
-                        dtype=np.float32,
-                    ),
-                    k=2,
-                )
-            )
-
-            self.assertEqual(
-                item_ids[0],
-                0,
+            self.assertFalse(
+                loaded.normalize
             )
 
             self.assertEqual(
                 loaded.num_items,
-                5,
+                4,
+            )
+
+            ids, scores = loaded.search(
+                np.array(
+                    [2.0, 0.0, 0.0],
+                    dtype=np.float32,
+                ),
+                k=1,
             )
 
             self.assertEqual(
-                loaded.zero_vector_count,
-                1,
+                ids[0],
+                0,
             )
 
-    def test_dimension_mismatch(self):
-        retriever = FaissRetriever(
-            dimension=3
-        )
-
-        with self.assertRaises(ValueError):
-            retriever.add(
-                np.ones(
-                    (2, 4),
-                    dtype=np.float32,
-                )
-            )
-
-    def test_empty_vectors_rejected(self):
-        retriever = FaissRetriever(
-            dimension=3
-        )
-
-        with self.assertRaises(ValueError):
-            retriever.add(
-                np.empty(
-                    (0, 3),
-                    dtype=np.float32,
-                )
+            self.assertAlmostEqual(
+                scores[0],
+                2.0,
+                places=5,
             )
 
 

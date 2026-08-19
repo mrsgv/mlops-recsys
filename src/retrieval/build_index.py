@@ -36,7 +36,7 @@ def load_ials_item_factors(
     path: str,
 ) -> np.ndarray:
     """
-    Load item factors from the iALS artifact.
+    Load item factors from the iALS .npz artifact.
 
     Expected shape:
         (num_items, factors)
@@ -59,14 +59,10 @@ def load_ials_item_factors(
                 "'item_factors'."
             )
 
-        item_factors = data[
-            "item_factors"
-        ]
-
-    item_factors = np.asarray(
-        item_factors,
-        dtype=np.float32,
-    )
+        item_factors = np.asarray(
+            data["item_factors"],
+            dtype=np.float32,
+        )
 
     if item_factors.ndim != 2:
         raise ValueError(
@@ -137,7 +133,9 @@ def load_and_validate_mapping(
             "0 to num_items - 1."
         )
 
-    if mapping["parent_asin"].duplicated().any():
+    if mapping[
+        "parent_asin"
+    ].duplicated().any():
         raise ValueError(
             "Duplicate parent_asin values found."
         )
@@ -175,24 +173,29 @@ def main() -> None:
     # 2. Load item mapping
     # ---------------------------------------------------------
 
-    mapping = (
-        load_and_validate_mapping(
-            ITEM_MAPPING_PATH,
-            num_items,
-        )
+    load_and_validate_mapping(
+        ITEM_MAPPING_PATH,
+        num_items,
     )
 
     # ---------------------------------------------------------
     # 3. Build FAISS index
     # ---------------------------------------------------------
 
+    # IMPORTANT:
+    # iALS ranks using raw inner product:
+    #
+    #     user_factor @ item_factor
+    #
+    # Therefore the FAISS index must NOT normalize vectors.
     retriever = FaissRetriever(
         dimension=dimension,
+        metric="inner_product",
+        normalize=False,
     )
 
     retriever.add(
-        item_factors,
-        normalize=True,
+        item_factors
     )
 
     print(
@@ -211,13 +214,8 @@ def main() -> None:
     )
 
     # ---------------------------------------------------------
-    # 4. Save index metadata
+    # 4. Build metadata
     # ---------------------------------------------------------
-
-    INDEX_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
 
     metadata = {
         "model_type": "ials",
@@ -227,7 +225,7 @@ def main() -> None:
         "num_items": num_items,
         "metric": "inner_product",
         "index_type": "IndexFlatIP",
-        "normalized_vectors": True,
+        "normalized_vectors": False,
         "zero_vector_count": (
             retriever.zero_vector_count
         ),
@@ -236,6 +234,11 @@ def main() -> None:
     # ---------------------------------------------------------
     # 5. Save
     # ---------------------------------------------------------
+
+    INDEX_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     retriever.save(
         path=str(INDEX_PATH),

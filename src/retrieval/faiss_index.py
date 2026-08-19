@@ -14,22 +14,26 @@ class FaissRetriever(Retriever):
     """
     Model-agnostic FAISS retrieval wrapper.
 
-    Current implementation:
-        - FAISS IndexFlatIP
-        - exact inner-product search
-        - item_idx == FAISS internal row ID
+    FAISS internal ID == item_idx.
 
-    Vectors are L2-normalized before insertion/search, so inner
-    product corresponds to cosine similarity.
+    The similarity semantics are controlled by `normalize`:
 
-    Zero vectors are preserved rather than dropped. This keeps the
-    invariant that FAISS row ID == item_idx.
+    normalize=False:
+        raw inner product
+
+    normalize=True:
+        cosine similarity implemented as inner product
+        over L2-normalized vectors
+
+    This distinction matters because different models may
+    define their ranking score differently.
     """
 
     def __init__(
         self,
         dimension: int,
         metric: str = "inner_product",
+        normalize: bool = False,
     ) -> None:
         if dimension <= 0:
             raise ValueError(
@@ -43,6 +47,7 @@ class FaissRetriever(Retriever):
 
         self.dimension = dimension
         self.metric = metric
+        self.normalize = normalize
 
         self.index = faiss.IndexFlatIP(
             dimension
@@ -56,7 +61,7 @@ class FaissRetriever(Retriever):
         vectors: np.ndarray,
         dimension: int | None = None,
     ) -> np.ndarray:
-        """Validate and convert vectors to float32."""
+        """Validate vectors and convert them to float32."""
         vectors = np.asarray(
             vectors,
             dtype=np.float32,
@@ -95,8 +100,7 @@ class FaissRetriever(Retriever):
         """
         L2-normalize vectors.
 
-        Non-zero vectors become unit vectors.
-        Zero vectors remain zero vectors.
+        Zero vectors are preserved as zero vectors.
         """
         vectors = np.asarray(
             vectors,
@@ -114,13 +118,11 @@ class FaissRetriever(Retriever):
             dtype=np.float32,
         )
 
-        nonzero_mask = (
-            norms[:, 0] > 0.0
-        )
+        nonzero = norms[:, 0] > 0.0
 
-        normalized[nonzero_mask] = (
-            vectors[nonzero_mask]
-            / norms[nonzero_mask]
+        normalized[nonzero] = (
+            vectors[nonzero]
+            / norms[nonzero]
         )
 
         return normalized
@@ -128,15 +130,12 @@ class FaissRetriever(Retriever):
     def add(
         self,
         vectors: np.ndarray,
-        normalize: bool = True,
     ) -> None:
         """
         Add vectors to the FAISS index.
 
-        The row ordering must correspond to item_idx:
-            row 0 -> item_idx 0
-            row 1 -> item_idx 1
-            ...
+        The caller is responsible for ensuring row order matches
+        the intended item_idx mapping.
         """
         vectors = self._validate_vectors(
             vectors,
@@ -154,7 +153,7 @@ class FaissRetriever(Retriever):
             )
         )
 
-        if normalize:
+        if self.normalize:
             vectors = self.normalize_vectors(
                 vectors
             )
@@ -203,22 +202,9 @@ class FaissRetriever(Retriever):
             self.dimension,
         )
 
-        # Query vectors also need normalization.
-        query_vector = (
-            self.normalize_vectors(
+        if self.normalize:
+            query_vector = self.normalize_vectors(
                 query_vector
-            )
-        )
-
-        # A zero query vector has no meaningful direction.
-        if np.all(
-            np.linalg.norm(
-                query_vector,
-                axis=1,
-            ) == 0.0
-        ):
-            raise ValueError(
-                "query_vector must not be a zero vector."
             )
 
         scores, indices = (
@@ -245,7 +231,7 @@ class FaissRetriever(Retriever):
         metadata_path: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        """Save FAISS index and optional metadata."""
+        """Save the FAISS index and optional metadata."""
         path = Path(path)
 
         path.parent.mkdir(
@@ -270,15 +256,13 @@ class FaissRetriever(Retriever):
             exist_ok=True,
         )
 
-        metadata = metadata or {}
-
         payload = {
-            **metadata,
+            **(metadata or {}),
             "dimension": self.dimension,
             "metric": self.metric,
             "num_items": self.num_items,
             "index_type": "IndexFlatIP",
-            "normalized_vectors": True,
+            "normalized_vectors": self.normalize,
             "zero_vector_count": (
                 self.zero_vector_count
             ),
@@ -334,17 +318,23 @@ class FaissRetriever(Retriever):
                 "Unsupported FAISS metric."
             )
 
+        normalize = bool(
+            metadata.get(
+                "normalized_vectors",
+                False,
+            )
+        )
+
         retriever = cls(
             dimension=index.d,
             metric=metric,
+            normalize=normalize,
         )
 
         retriever.index = index
-
         retriever.num_items = int(
             index.ntotal
         )
-
         retriever.zero_vector_count = int(
             metadata.get(
                 "zero_vector_count",
