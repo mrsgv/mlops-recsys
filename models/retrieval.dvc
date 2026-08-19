@@ -1,0 +1,6 @@
+outs:
+- md5: 311ee6b6d590e32ed7a5b22b79dd8500.dir
+  size: 6557038
+  nfiles: 2
+  hash: md5
+  path: retrieval
