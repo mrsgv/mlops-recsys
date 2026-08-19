@@ -15,6 +15,7 @@ from src.evaluation.split import (
     validate_split,
 )
 from src.models.item_features import ItemFeatureEncoder
+from src.models.negative_sampling import NegativeSampler
 from src.models.two_tower_v2 import TwoTowerV2
 
 
@@ -28,7 +29,9 @@ ITEM_FEATURES_PATH = (
     "data/processed/video_games_items.parquet"
 )
 
-MODEL_DIR = Path("models/two_tower_v2")
+MODEL_DIR = Path(
+    "models/two_tower_v2_negative_sampling"
+)
 
 ENCODER_PATH = (
     MODEL_DIR / "item_feature_encoder.pkl"
@@ -52,7 +55,10 @@ EPOCHS = 5
 LEARNING_RATE = 1e-3
 
 TOP_K = 10
+
 MAX_TEXT_FEATURES = 256
+
+NUM_NEGATIVES = 5
 
 RANDOM_SEED = 42
 
@@ -73,73 +79,36 @@ def set_seed(seed: int = RANDOM_SEED) -> None:
 # Dataset
 # ============================================================
 
-class TwoTowerV2Dataset(Dataset):
+class TwoTowerV21Dataset(Dataset):
     """
-    Positive user-item interactions enriched with precomputed
-    item metadata features.
+    Positive user-item interactions plus explicit,
+    user-history-aware negative item IDs.
     """
 
     def __init__(
         self,
         interactions: pd.DataFrame,
-        item_features: dict[str, object],
+        negative_items: torch.Tensor,
     ) -> None:
-        item_indices = (
-            interactions["item_idx"]
-            .to_numpy()
-        )
+        if len(interactions) != len(
+            negative_items
+        ):
+            raise ValueError(
+                "Number of negative-sample rows must "
+                "match the number of interactions."
+            )
 
         self.users = torch.tensor(
             interactions["user_idx"].to_numpy(),
             dtype=torch.long,
         )
 
-        self.items = torch.tensor(
-            item_indices,
+        self.positive_items = torch.tensor(
+            interactions["item_idx"].to_numpy(),
             dtype=torch.long,
         )
 
-        self.main_category = torch.tensor(
-            item_features["main_category"][
-                item_indices
-            ],
-            dtype=torch.long,
-        )
-
-        self.brand = torch.tensor(
-            item_features["brand"][
-                item_indices
-            ],
-            dtype=torch.long,
-        )
-
-        self.store = torch.tensor(
-            item_features["store"][
-                item_indices
-            ],
-            dtype=torch.long,
-        )
-
-        self.price_bucket = torch.tensor(
-            item_features["price_bucket"][
-                item_indices
-            ],
-            dtype=torch.long,
-        )
-
-        self.numeric_features = torch.tensor(
-            item_features["numeric_features"][
-                item_indices
-            ],
-            dtype=torch.float32,
-        )
-
-        self.text_features = torch.tensor(
-            item_features["text_features"][
-                item_indices
-            ],
-            dtype=torch.float32,
-        )
+        self.negative_items = negative_items
 
     def __len__(self) -> int:
         return len(self.users)
@@ -147,13 +116,8 @@ class TwoTowerV2Dataset(Dataset):
     def __getitem__(self, idx: int):
         return (
             self.users[idx],
-            self.items[idx],
-            self.main_category[idx],
-            self.brand[idx],
-            self.store[idx],
-            self.price_bucket[idx],
-            self.numeric_features[idx],
-            self.text_features[idx],
+            self.positive_items[idx],
+            self.negative_items[idx],
         )
 
 
@@ -177,9 +141,6 @@ def build_ground_truth(
 ) -> dict[int, set[int]]:
     """
     Build user -> held-out relevant-item mapping.
-
-    Under the chronological leave-one-out protocol there is
-    exactly one relevant item per eligible user.
     """
     return (
         test_df
@@ -193,9 +154,7 @@ def prepare_all_item_features(
     item_features: dict[str, object],
     device: str,
 ) -> dict[str, torch.Tensor]:
-    """
-    Convert all item features to tensors once for evaluation.
-    """
+    """Convert all item features to tensors once."""
     return {
         "main_category": torch.tensor(
             item_features["main_category"],
@@ -230,6 +189,31 @@ def prepare_all_item_features(
     }
 
 
+def build_dataset_for_epoch(
+    train_df: pd.DataFrame,
+    negative_sampler: NegativeSampler,
+) -> TwoTowerV21Dataset:
+    """
+    Generate a fresh set of negatives and construct the dataset
+    for one training epoch.
+    """
+    negative_matrix = (
+        negative_sampler.sample_for_interactions(
+            train_df
+        )
+    )
+
+    negative_tensor = torch.tensor(
+        negative_matrix,
+        dtype=torch.long,
+    )
+
+    return TwoTowerV21Dataset(
+        interactions=train_df,
+        negative_items=negative_tensor,
+    )
+
+
 @torch.no_grad()
 def generate_recommendations(
     model: TwoTowerV2,
@@ -243,8 +227,7 @@ def generate_recommendations(
     """
     Generate ranked Top-K recommendations.
 
-    Previously seen training items are masked so that they cannot
-    appear in the recommendation list.
+    Previously seen training items are masked.
     """
     model.eval()
 
@@ -259,8 +242,12 @@ def generate_recommendations(
         main_category_idx=all_item_features[
             "main_category"
         ],
-        brand_idx=all_item_features["brand"],
-        store_idx=all_item_features["store"],
+        brand_idx=all_item_features[
+            "brand"
+        ],
+        store_idx=all_item_features[
+            "store"
+        ],
         price_bucket_idx=all_item_features[
             "price_bucket"
         ],
@@ -279,7 +266,10 @@ def generate_recommendations(
         .to_dict()
     )
 
-    recommendations: dict[int, list[int]] = {}
+    recommendations: dict[
+        int,
+        list[int],
+    ] = {}
 
     top_k = min(k, num_items)
 
@@ -301,9 +291,11 @@ def generate_recommendations(
             @ item_embeddings.T
         ).squeeze(0)
 
-        seen_items = seen_items_by_user.get(
-            user_idx,
-            set(),
+        seen_items = (
+            seen_items_by_user.get(
+                user_idx,
+                set(),
+            )
         )
 
         if seen_items:
@@ -333,20 +325,29 @@ def evaluate_model(
     num_items: int,
     device: str,
 ) -> dict[str, float | int]:
-    """Generate recommendations and evaluate using the common framework."""
-    all_item_features = prepare_all_item_features(
-        item_features,
-        device,
+    """Evaluate using the common recommendation framework."""
+
+    all_item_features = (
+        prepare_all_item_features(
+            item_features,
+            device,
+        )
     )
 
-    recommendations = generate_recommendations(
-        model=model,
-        train_df=train_df,
-        evaluation_users=test_df["user_idx"],
-        all_item_features=all_item_features,
-        num_items=num_items,
-        device=device,
-        k=TOP_K,
+    recommendations = (
+        generate_recommendations(
+            model=model,
+            train_df=train_df,
+            evaluation_users=test_df[
+                "user_idx"
+            ],
+            all_item_features=(
+                all_item_features
+            ),
+            num_items=num_items,
+            device=device,
+            k=TOP_K,
+        )
     )
 
     ground_truth = build_ground_truth(
@@ -364,20 +365,28 @@ def log_epoch_metrics(
     metrics: dict[str, float | int],
     epoch: int,
 ) -> None:
-    """Log common ranking metrics to MLflow."""
+    """Log ranking metrics to MLflow."""
     mlflow.log_metrics(
         {
             f"precision_at_{TOP_K}": float(
-                metrics[f"precision_at_{TOP_K}"]
+                metrics[
+                    f"precision_at_{TOP_K}"
+                ]
             ),
             f"recall_at_{TOP_K}": float(
-                metrics[f"recall_at_{TOP_K}"]
+                metrics[
+                    f"recall_at_{TOP_K}"
+                ]
             ),
             f"hit_rate_at_{TOP_K}": float(
-                metrics[f"hit_rate_at_{TOP_K}"]
+                metrics[
+                    f"hit_rate_at_{TOP_K}"
+                ]
             ),
             f"ndcg_at_{TOP_K}": float(
-                metrics[f"ndcg_at_{TOP_K}"]
+                metrics[
+                    f"ndcg_at_{TOP_K}"
+                ]
             ),
         },
         step=epoch,
@@ -394,16 +403,25 @@ def main() -> None:
     device = select_device()
 
     print("=" * 60)
-    print("Two-Tower V2 — Metadata-Aware Retrieval")
+    print(
+        "Two-Tower V2.1 — Explicit Negative Sampling"
+    )
     print("=" * 60)
+
     print(f"Device: {device}")
     print(f"Seed:   {RANDOM_SEED}")
+    print(
+        f"Negatives per positive: "
+        f"{NUM_NEGATIVES}"
+    )
 
     # --------------------------------------------------------
     # 1. Load interactions
     # --------------------------------------------------------
 
-    print("\n=== Loading Interaction Data ===")
+    print(
+        "\n=== Loading Interaction Data ==="
+    )
 
     df = pd.read_parquet(
         DATA_PATH
@@ -425,7 +443,7 @@ def main() -> None:
     )
 
     # --------------------------------------------------------
-    # 2. Common chronological train/test split
+    # 2. Common chronological split
     # --------------------------------------------------------
 
     print(
@@ -462,7 +480,7 @@ def main() -> None:
     )
 
     # --------------------------------------------------------
-    # 3. Load item feature table
+    # 3. Item feature table
     # --------------------------------------------------------
 
     print(
@@ -479,15 +497,17 @@ def main() -> None:
 
     num_items = len(item_df)
 
+    expected_item_ids = list(
+        range(num_items)
+    )
+
     if (
-        item_df["item_idx"]
-        .tolist()
-        != list(range(num_items))
+        item_df["item_idx"].tolist()
+        != expected_item_ids
     ):
         raise ValueError(
             "Item feature table must contain "
-            "contiguous item_idx values from 0 "
-            "to num_items - 1."
+            "contiguous item_idx values."
         )
 
     print(
@@ -501,7 +521,7 @@ def main() -> None:
     )
 
     # --------------------------------------------------------
-    # 4. Fit item feature encoder
+    # 4. Item feature encoder
     # --------------------------------------------------------
 
     print(
@@ -546,42 +566,7 @@ def main() -> None:
     )
 
     # --------------------------------------------------------
-    # 5. Training dataset
-    # --------------------------------------------------------
-
-    print(
-        "\n=== Building Training Dataset ==="
-    )
-
-    dataset = TwoTowerV2Dataset(
-        interactions=train_df,
-        item_features=item_features,
-    )
-
-    loader = DataLoader(
-        dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=True,
-        drop_last=True,
-    )
-
-    print(
-        f"Training examples: "
-        f"{len(dataset):,}"
-    )
-
-    print(
-        f"Batch size: "
-        f"{BATCH_SIZE}"
-    )
-
-    print(
-        f"Batches per epoch: "
-        f"{len(loader):,}"
-    )
-
-    # --------------------------------------------------------
-    # 6. Create model
+    # 5. Model
     # --------------------------------------------------------
 
     num_users = (
@@ -597,10 +582,14 @@ def main() -> None:
             ]
         ),
         brand_size=len(
-            encoder.vocabularies["brand"]
+            encoder.vocabularies[
+                "brand"
+            ]
         ),
         store_size=len(
-            encoder.vocabularies["store"]
+            encoder.vocabularies[
+                "store"
+            ]
         ),
         price_bucket_size=len(
             encoder.vocabularies[
@@ -635,7 +624,28 @@ def main() -> None:
     )
 
     # --------------------------------------------------------
-    # 7. MLflow configuration
+    # 6. Shared item features on device
+    # --------------------------------------------------------
+
+    all_item_features = (
+        prepare_all_item_features(
+            item_features,
+            device,
+        )
+    )
+
+    # --------------------------------------------------------
+    # 7. Negative sampler
+    # --------------------------------------------------------
+
+    negative_sampler = NegativeSampler(
+        num_items=num_items,
+        num_negatives=NUM_NEGATIVES,
+        seed=RANDOM_SEED,
+    )
+
+    # --------------------------------------------------------
+    # 8. MLflow
     # --------------------------------------------------------
 
     tracking_uri = os.environ.get(
@@ -651,33 +661,52 @@ def main() -> None:
         "two-tower-v2"
     )
 
-    # --------------------------------------------------------
-    # 8. Training
-    # --------------------------------------------------------
-
     with mlflow.start_run(
-        run_name="two-tower-v2-metadata"
+        run_name=(
+            "two-tower-v2.1-negative-sampling"
+        )
     ):
         mlflow.log_params(
             {
-                "model_version": "two-tower-v2",
-                "embedding_dim": EMBEDDING_DIM,
-                "hidden_dim": HIDDEN_DIM,
-                "categorical_dim": CATEGORICAL_DIM,
-                "batch_size": BATCH_SIZE,
+                "model_version": (
+                    "two-tower-v2.1"
+                ),
+                "negative_sampling": (
+                    "explicit_user_history"
+                ),
+                "num_negatives": (
+                    NUM_NEGATIVES
+                ),
+                "negative_seed": (
+                    RANDOM_SEED
+                ),
+                "embedding_dim": (
+                    EMBEDDING_DIM
+                ),
+                "hidden_dim": (
+                    HIDDEN_DIM
+                ),
+                "categorical_dim": (
+                    CATEGORICAL_DIM
+                ),
+                "batch_size": (
+                    BATCH_SIZE
+                ),
                 "epochs": EPOCHS,
-                "learning_rate": LEARNING_RATE,
+                "learning_rate": (
+                    LEARNING_RATE
+                ),
                 "top_k": TOP_K,
                 "max_text_features": (
                     MAX_TEXT_FEATURES
                 ),
                 "num_users": num_users,
                 "num_items": num_items,
-                "train_interactions": len(
-                    train_df
+                "train_interactions": (
+                    len(train_df)
                 ),
-                "test_interactions": len(
-                    test_df
+                "test_interactions": (
+                    len(test_df)
                 ),
                 "metadata_coverage": float(
                     item_df[
@@ -689,57 +718,208 @@ def main() -> None:
             }
         )
 
-        best_recall = float("-inf")
+        best_recall = float(
+            "-inf"
+        )
+
         best_epoch = -1
 
+        # ----------------------------------------------------
+        # 9. Training
+        # ----------------------------------------------------
+
         for epoch in range(EPOCHS):
+
+            print(
+                f"\n=== Epoch "
+                f"{epoch + 1}/{EPOCHS} ==="
+            )
+
+            # Fresh deterministic negatives per epoch.
+            epoch_sampler = NegativeSampler(
+                num_items=num_items,
+                num_negatives=NUM_NEGATIVES,
+                seed=(
+                    RANDOM_SEED + epoch
+                ),
+            )
+
+            dataset = (
+                build_dataset_for_epoch(
+                    train_df,
+                    epoch_sampler,
+                )
+            )
+
+            loader = DataLoader(
+                dataset,
+                batch_size=BATCH_SIZE,
+                shuffle=True,
+                drop_last=True,
+            )
+
             model.train()
 
             total_loss = 0.0
+
             batch_count = 0
 
             for batch in loader:
+
                 (
                     users,
-                    items,
-                    main_category,
-                    brand,
-                    store,
-                    price_bucket,
-                    numeric_features,
-                    text_features,
+                    positive_items,
+                    negative_items,
                 ) = batch
 
                 users = users.to(device)
-                items = items.to(device)
-                main_category = (
-                    main_category.to(device)
-                )
-                brand = brand.to(device)
-                store = store.to(device)
-                price_bucket = (
-                    price_bucket.to(device)
-                )
-                numeric_features = (
-                    numeric_features.to(device)
-                )
-                text_features = (
-                    text_features.to(device)
+
+                positive_items = (
+                    positive_items.to(device)
                 )
 
-                scores = model(
-                    users,
-                    items,
-                    main_category,
-                    brand,
-                    store,
-                    price_bucket,
-                    numeric_features,
-                    text_features,
+                negative_items = (
+                    negative_items.to(device)
                 )
 
-                labels = torch.arange(
-                    len(users),
+                batch_size = (
+                    users.shape[0]
+                )
+
+                num_negatives = (
+                    negative_items.shape[1]
+                )
+
+                # --------------------------------------------
+                # Positive + explicit negatives
+                # --------------------------------------------
+
+                all_item_ids = torch.cat(
+                    [
+                        positive_items.unsqueeze(
+                            1
+                        ),
+                        negative_items,
+                    ],
+                    dim=1,
+                )
+
+                flat_item_ids = (
+                    all_item_ids.reshape(-1)
+                )
+
+                # --------------------------------------------
+                # Look up item features
+                # --------------------------------------------
+
+                flat_main_category = (
+                    all_item_features[
+                        "main_category"
+                    ][flat_item_ids]
+                )
+
+                flat_brand = (
+                    all_item_features[
+                        "brand"
+                    ][flat_item_ids]
+                )
+
+                flat_store = (
+                    all_item_features[
+                        "store"
+                    ][flat_item_ids]
+                )
+
+                flat_price_bucket = (
+                    all_item_features[
+                        "price_bucket"
+                    ][flat_item_ids]
+                )
+
+                flat_numeric_features = (
+                    all_item_features[
+                        "numeric_features"
+                    ][flat_item_ids]
+                )
+
+                flat_text_features = (
+                    all_item_features[
+                        "text_features"
+                    ][flat_item_ids]
+                )
+
+                # --------------------------------------------
+                # Encode items
+                # --------------------------------------------
+
+                item_embeddings = (
+                    model.encode_items(
+                        item_idx=flat_item_ids,
+                        main_category_idx=(
+                            flat_main_category
+                        ),
+                        brand_idx=(
+                            flat_brand
+                        ),
+                        store_idx=(
+                            flat_store
+                        ),
+                        price_bucket_idx=(
+                            flat_price_bucket
+                        ),
+                        numeric_features=(
+                            flat_numeric_features
+                        ),
+                        text_features=(
+                            flat_text_features
+                        ),
+                    )
+                )
+
+                # --------------------------------------------
+                # Encode users
+                # --------------------------------------------
+
+                user_embeddings = (
+                    model.encode_users(
+                        users
+                    )
+                )
+
+                # Repeat each user embedding for
+                # positive + negatives.
+                user_embeddings = (
+                    user_embeddings
+                    .unsqueeze(1)
+                    .expand(
+                        -1,
+                        1 + num_negatives,
+                        -1,
+                    )
+                    .reshape(
+                        -1,
+                        EMBEDDING_DIM,
+                    )
+                )
+
+                # --------------------------------------------
+                # Similarity scores
+                # --------------------------------------------
+
+                scores = (
+                    user_embeddings
+                    * item_embeddings
+                ).sum(dim=1)
+
+                scores = scores.reshape(
+                    batch_size,
+                    1 + num_negatives,
+                )
+
+                # Positive item is always column 0.
+                labels = torch.zeros(
+                    batch_size,
+                    dtype=torch.long,
                     device=device,
                 )
 
@@ -786,10 +966,6 @@ def main() -> None:
             )
 
             print(
-                f"\nEpoch {epoch + 1}/{EPOCHS}"
-            )
-
-            print(
                 f"Loss: "
                 f"{avg_loss:.6f}"
             )
@@ -826,49 +1002,57 @@ def main() -> None:
             )
 
             # ------------------------------------------------
-            # Track best epoch by Recall@K
+            # Save best epoch by Recall@K
             # ------------------------------------------------
 
             if recall > best_recall:
+
                 best_recall = recall
+
                 best_epoch = epoch
 
+                checkpoint = {
+                    "model_state_dict":
+                        model.state_dict(),
+                    "model_version":
+                        "two-tower-v2.1",
+                    "embedding_dim":
+                        EMBEDDING_DIM,
+                    "hidden_dim":
+                        HIDDEN_DIM,
+                    "categorical_dim":
+                        CATEGORICAL_DIM,
+                    "num_users":
+                        num_users,
+                    "num_items":
+                        num_items,
+                    "text_dim":
+                        item_features[
+                            "text_features"
+                        ].shape[1],
+                    "numeric_dim":
+                        item_features[
+                            "numeric_features"
+                        ].shape[1],
+                    "num_negatives":
+                        NUM_NEGATIVES,
+                    "seed":
+                        RANDOM_SEED,
+                    "top_k":
+                        TOP_K,
+                }
+
                 torch.save(
-                    {
-                        "model_state_dict":
-                            model.state_dict(),
-                        "embedding_dim":
-                            EMBEDDING_DIM,
-                        "hidden_dim":
-                            HIDDEN_DIM,
-                        "categorical_dim":
-                            CATEGORICAL_DIM,
-                        "num_users":
-                            num_users,
-                        "num_items":
-                            num_items,
-                        "text_dim":
-                            item_features[
-                                "text_features"
-                            ].shape[1],
-                        "numeric_dim":
-                            item_features[
-                                "numeric_features"
-                            ].shape[1],
-                        "top_k":
-                            TOP_K,
-                        "seed":
-                            RANDOM_SEED,
-                    },
+                    checkpoint,
                     MODEL_PATH,
                 )
 
         # ----------------------------------------------------
-        # 9. Final MLflow logging
+        # 10. Final MLflow logging
         # ----------------------------------------------------
 
         mlflow.log_metric(
-            "best_recall_at_10",
+            f"best_recall_at_{TOP_K}",
             best_recall,
         )
 
@@ -885,19 +1069,25 @@ def main() -> None:
             str(ENCODER_PATH)
         )
 
-        print("\n=== Training Complete ===")
+        print(
+            "\n=== Training Complete ==="
+        )
+
         print(
             f"Best epoch: "
             f"{best_epoch + 1}"
         )
+
         print(
             f"Best Recall@{TOP_K}: "
             f"{best_recall:.6f}"
         )
+
         print(
             f"Model saved to: "
             f"{MODEL_PATH}"
         )
+
         print(
             f"Encoder saved to: "
             f"{ENCODER_PATH}"
