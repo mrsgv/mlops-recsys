@@ -1,0 +1,5 @@
+outs:
+- md5: df9eaa08a24d450b915befc0c23a7764
+  size: 401476
+  hash: md5
+  path: item_mapping.parquet

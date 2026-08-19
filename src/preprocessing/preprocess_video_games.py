@@ -1,50 +1,98 @@
-import gzip
+from __future__ import annotations
+
 import os
 
 import pandas as pd
 
 
-def main():
-    input_path = "data/raw/Video_Games.csv.gz"
-    output_path = "data/processed/video_games.parquet"
+INPUT_PATH = "data/raw/Video_Games.csv.gz"
 
+INTERACTIONS_OUTPUT_PATH = (
+    "data/processed/video_games.parquet"
+)
+
+ITEM_MAPPING_OUTPUT_PATH = (
+    "data/processed/item_mapping.parquet"
+)
+
+
+def main() -> None:
     print("\n=== Reading Input ===")
 
     df = pd.read_csv(
-        input_path,
-        compression="gzip"
+        INPUT_PATH,
+        compression="gzip",
     )
 
     print(f"Rows: {len(df):,}")
     print(f"Columns: {list(df.columns)}")
 
     # ---------------------------------------------------------
-    # 1. Validate
+    # 1. Validate input schema
     # ---------------------------------------------------------
+
+    required_columns = {
+        "user_id",
+        "parent_asin",
+        "rating",
+        "timestamp",
+    }
+
+    missing_columns = (
+        required_columns - set(df.columns)
+    )
+
+    if missing_columns:
+        raise ValueError(
+            "Input dataset is missing required columns: "
+            f"{sorted(missing_columns)}"
+        )
+
+    # ---------------------------------------------------------
+    # 2. Validate values
+    # ---------------------------------------------------------
+
     print("\n=== Null Counts ===")
     print(df.isnull().sum())
 
+    invalid_ratings = (
+        (df["rating"] < 1)
+        | (df["rating"] > 5)
+    ).sum()
+
     print("\n=== Invalid Ratings ===")
-    invalid_ratings = ((df["rating"] < 1) | (df["rating"] > 5)).sum()
     print(invalid_ratings)
 
+    if invalid_ratings > 0:
+        raise ValueError(
+            f"Found {invalid_ratings} invalid ratings."
+        )
+
     # ---------------------------------------------------------
-    # 2. Remove duplicate user-product pairs
+    # 3. Remove duplicate user-product interactions
     # ---------------------------------------------------------
+
     duplicate_count = df.duplicated(
-        subset=["user_id", "parent_asin"]
+        subset=[
+            "user_id",
+            "parent_asin",
+        ]
     ).sum()
 
     print("\n=== Duplicate User-Product Pairs ===")
     print(duplicate_count)
 
     df = df.drop_duplicates(
-        subset=["user_id", "parent_asin"]
+        subset=[
+            "user_id",
+            "parent_asin",
+        ]
     ).copy()
 
     # ---------------------------------------------------------
-    # 3. Create integer user IDs
+    # 4. Create deterministic user IDs
     # ---------------------------------------------------------
+
     user_ids = {
         user_id: idx
         for idx, user_id in enumerate(
@@ -53,8 +101,9 @@ def main():
     }
 
     # ---------------------------------------------------------
-    # 4. Create integer item IDs
+    # 5. Create deterministic item IDs
     # ---------------------------------------------------------
+
     item_ids = {
         item_id: idx
         for idx, item_id in enumerate(
@@ -62,12 +111,36 @@ def main():
         )
     }
 
-    df["user_idx"] = df["user_id"].map(user_ids)
-    df["item_idx"] = df["parent_asin"].map(item_ids)
+    # ---------------------------------------------------------
+    # 6. Apply mappings
+    # ---------------------------------------------------------
+
+    df["user_idx"] = df["user_id"].map(
+        user_ids
+    )
+
+    df["item_idx"] = df["parent_asin"].map(
+        item_ids
+    )
 
     # ---------------------------------------------------------
-    # 5. Select model-ready columns
+    # 7. Validate mappings
     # ---------------------------------------------------------
+
+    if df["user_idx"].isna().any():
+        raise ValueError(
+            "Some user IDs could not be mapped."
+        )
+
+    if df["item_idx"].isna().any():
+        raise ValueError(
+            "Some item IDs could not be mapped."
+        )
+
+    # ---------------------------------------------------------
+    # 8. Build interaction dataset
+    # ---------------------------------------------------------
+
     processed = df[
         [
             "user_idx",
@@ -78,34 +151,119 @@ def main():
     ].copy()
 
     # ---------------------------------------------------------
-    # 6. Save
+    # 9. Build item mapping dataset
     # ---------------------------------------------------------
+
+    item_mapping = pd.DataFrame(
+        [
+            {
+                "item_idx": item_idx,
+                "parent_asin": parent_asin,
+            }
+            for parent_asin, item_idx in item_ids.items()
+        ]
+    ).sort_values(
+        "item_idx"
+    ).reset_index(drop=True)
+
+    # ---------------------------------------------------------
+    # 10. Validate item mapping
+    # ---------------------------------------------------------
+
+    if len(item_mapping) != len(item_ids):
+        raise ValueError(
+            "Unexpected item mapping size."
+        )
+
+    if item_mapping["item_idx"].duplicated().any():
+        raise ValueError(
+            "Duplicate item_idx values found."
+        )
+
+    if item_mapping["parent_asin"].duplicated().any():
+        raise ValueError(
+            "Duplicate parent_asin values found."
+        )
+
+    expected_item_indices = list(
+        range(len(item_mapping))
+    )
+
+    actual_item_indices = (
+        item_mapping["item_idx"].tolist()
+    )
+
+    if actual_item_indices != expected_item_indices:
+        raise ValueError(
+            "item_idx values are not contiguous "
+            "starting from zero."
+        )
+
+    # ---------------------------------------------------------
+    # 11. Save outputs
+    # ---------------------------------------------------------
+
     os.makedirs(
-        os.path.dirname(output_path),
-        exist_ok=True
+        "data/processed",
+        exist_ok=True,
     )
 
     processed.to_parquet(
-        output_path,
-        index=False
+        INTERACTIONS_OUTPUT_PATH,
+        index=False,
+    )
+
+    item_mapping.to_parquet(
+        ITEM_MAPPING_OUTPUT_PATH,
+        index=False,
     )
 
     # ---------------------------------------------------------
-    # 7. Final summary
+    # 12. Summary
     # ---------------------------------------------------------
-    print("\n=== Processed Dataset ===")
-    print(f"Interactions: {len(processed):,}")
-    print(f"Users: {processed['user_idx'].nunique():,}")
-    print(f"Products: {processed['item_idx'].nunique():,}")
 
-    print("\n=== Processed Schema ===")
+    print("\n=== Processed Dataset ===")
+    print(
+        f"Interactions: "
+        f"{len(processed):,}"
+    )
+    print(
+        f"Users: "
+        f"{processed['user_idx'].nunique():,}"
+    )
+    print(
+        f"Products: "
+        f"{processed['item_idx'].nunique():,}"
+    )
+
+    print("\n=== Item Mapping ===")
+    print(
+        f"Items: "
+        f"{len(item_mapping):,}"
+    )
+
+    print("\n=== Interaction Schema ===")
     print(processed.dtypes)
 
-    print("\n=== First 10 Rows ===")
-    print(processed.head(10).to_string(index=False))
+    print("\n=== Item Mapping Schema ===")
+    print(item_mapping.dtypes)
 
-    print("\n=== Saved To ===")
-    print(output_path)
+    print("\n=== Sample Item Mapping ===")
+    print(
+        item_mapping
+        .head(10)
+        .to_string(index=False)
+    )
+
+    print("\n=== Saved Outputs ===")
+    print(
+        f"Interactions: "
+        f"{INTERACTIONS_OUTPUT_PATH}"
+    )
+    print(
+        f"Item mapping: "
+        f"{ITEM_MAPPING_OUTPUT_PATH}"
+    )
 
 
 if __name__ == "__main__":
