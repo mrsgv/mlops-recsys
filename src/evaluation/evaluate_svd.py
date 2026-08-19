@@ -1,6 +1,8 @@
-import numpy as np
+from __future__ import annotations
+
 import pandas as pd
 
+from src.evaluation.metrics import evaluate_top_k
 from src.evaluation.split import (
     chronological_train_test_split,
     validate_split,
@@ -12,10 +14,11 @@ RECOMMENDATIONS_PATH = "data/predictions/svd_top10.parquet"
 OUTPUT_PATH = "data/predictions/svd_evaluation.csv"
 
 TOP_K = 10
+SVD_FACTORS = 50
 
 
-def main():
-
+def load_data() -> pd.DataFrame:
+    """Load the processed Video Games interaction dataset."""
     print("\n=== Loading Data ===")
 
     df = pd.read_parquet(DATA_PATH)
@@ -24,149 +27,143 @@ def main():
     print(f"Users: {df['user_idx'].nunique():,}")
     print(f"Products: {df['item_idx'].nunique():,}")
 
-    # ---------------------------------------------------------
-    # Common chronological evaluation split
-    # ---------------------------------------------------------
+    return df
 
+
+def create_evaluation_split(
+    df: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Create and validate the common chronological evaluation split."""
     print("\n=== Creating Common Evaluation Split ===")
 
-    # Create and validate the common split.
     train, test = chronological_train_test_split(df)
     validate_split(train, test)
 
+    print(f"Training interactions: {len(train):,}")
     print(f"Test interactions: {len(test):,}")
     print(f"Test users: {test['user_idx'].nunique():,}")
 
-    # ---------------------------------------------------------
-    # Load recommendations
-    # ---------------------------------------------------------
+    return train, test
 
+
+def load_recommendations() -> pd.DataFrame:
+    """Load precomputed SVD recommendations."""
     print("\n=== Loading SVD Recommendations ===")
 
     recommendations = pd.read_parquet(
         RECOMMENDATIONS_PATH
     )
 
-    print(
-        f"Recommendation rows: "
-        f"{len(recommendations):,}"
-    )
+    required_columns = {
+        "user_idx",
+        "item_idx",
+        "rank",
+    }
 
+    missing = required_columns - set(recommendations.columns)
+
+    if missing:
+        raise ValueError(
+            "Recommendation file is missing required columns: "
+            f"{sorted(missing)}"
+        )
+
+    print(f"Recommendation rows: {len(recommendations):,}")
     print(
-        f"Users with recommendations: "
+        "Users with recommendations: "
         f"{recommendations['user_idx'].nunique():,}"
     )
 
-    # ---------------------------------------------------------
-    # Convert recommendations into dictionary
-    # ---------------------------------------------------------
+    return recommendations
 
-    recommendation_map = (
+
+def build_recommendation_map(
+    recommendations: pd.DataFrame,
+) -> dict[int, list[int]]:
+    """Convert recommendation rows into ranked item lists per user."""
+    recommendations = recommendations.sort_values(
+        ["user_idx", "rank"]
+    )
+
+    return (
         recommendations
-        .sort_values(["user_idx", "rank"])
         .groupby("user_idx")["item_idx"]
         .apply(list)
         .to_dict()
     )
 
-    # ---------------------------------------------------------
-    # Evaluate
-    # ---------------------------------------------------------
 
-    print("\n=== Evaluating ===")
+def build_ground_truth(
+    test: pd.DataFrame,
+) -> dict[int, set[int]]:
+    """
+    Build the evaluation ground-truth mapping.
 
-    hits = 0
-    ndcg_sum = 0.0
-    users_evaluated = 0
+    Our chronological leave-one-out protocol produces exactly
+    one held-out item per eligible user.
+    """
+    return (
+        test.groupby("user_idx")["item_idx"]
+        .apply(set)
+        .to_dict()
+    )
 
-    for row in test.itertuples(index=False):
 
-        user_idx = row.user_idx
-        actual_item = row.item_idx
+def main() -> None:
+    df = load_data()
 
-        if user_idx not in recommendation_map:
-            continue
+    _, test = create_evaluation_split(df)
 
-        recommended = recommendation_map[user_idx][:TOP_K]
+    recommendations = load_recommendations()
 
-        users_evaluated += 1
+    recommendation_map = build_recommendation_map(
+        recommendations
+    )
 
-        if actual_item in recommended:
+    ground_truth = build_ground_truth(test)
 
-            hits += 1
+    print("\n=== Evaluating SVD ===")
 
-            rank = recommended.index(actual_item) + 1
+    results = evaluate_top_k(
+        recommendations=recommendation_map,
+        ground_truth=ground_truth,
+        k=TOP_K,
+    )
 
-            ndcg_sum += (
-                1.0 / np.log2(rank + 1)
-            )
-
-    # ---------------------------------------------------------
-    # Metrics
-    # ---------------------------------------------------------
-
-    if users_evaluated == 0:
-        print("No users could be evaluated.")
-        return
-
-    hit_rate = hits / users_evaluated
-
-    # One held-out relevant item per user:
-    #
-    # Precision@K = Hit Rate@K / K
-    # Recall@K    = Hit Rate@K
-
-    precision = hit_rate / TOP_K
-    recall = hit_rate
-    ndcg = ndcg_sum / users_evaluated
-
-    # ---------------------------------------------------------
-    # Results
-    # ---------------------------------------------------------
-
-    print("\n=== SVD Baseline Results ===")
-
-    print(f"Users evaluated: {users_evaluated:,}")
+    print(
+        f"Users evaluated: "
+        f"{results['users_evaluated']:,}"
+    )
 
     print(
         f"Precision@{TOP_K}: "
-        f"{precision:.6f}"
+        f"{results[f'precision_at_{TOP_K}']:.6f}"
     )
 
     print(
         f"Recall@{TOP_K}:    "
-        f"{recall:.6f}"
+        f"{results[f'recall_at_{TOP_K}']:.6f}"
     )
 
     print(
         f"Hit Rate@{TOP_K}:  "
-        f"{hit_rate:.6f}"
+        f"{results[f'hit_rate_at_{TOP_K}']:.6f}"
     )
 
     print(
         f"NDCG@{TOP_K}:      "
-        f"{ndcg:.6f}"
+        f"{results[f'ndcg_at_{TOP_K}']:.6f}"
     )
 
-    # ---------------------------------------------------------
-    # Save results
-    # ---------------------------------------------------------
+    output = {
+        "model": "SVD",
+        "factors": SVD_FACTORS,
+        **results,
+    }
 
-    results = pd.DataFrame(
-        [
-            {
-                "model": "SVD",
-                "factors": 50,
-                "users_evaluated": users_evaluated,
-                "precision_at_10": precision,
-                "recall_at_10": recall,
-                "hit_rate_at_10": hit_rate,
-                "ndcg_at_10": ndcg,
-            }
-        ]
-    )
+    results_df = pd.DataFrame([output])
 
-    results.to_csv(
+    results_df.to_csv(
         OUTPUT_PATH,
         index=False,
     )
