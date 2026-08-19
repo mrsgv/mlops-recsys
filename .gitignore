@@ -35,3 +35,13 @@ airflow/*.cfg
 .DS_Store
 .idea/
 .vscode/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Google / OAuth credentials
+client_secret_*.json
+credentials*.json
+token*.json
