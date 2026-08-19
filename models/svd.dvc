@@ -1,6 +1,6 @@
 outs:
-- md5: 9b92426ce1043eb2bea6029f18c677da.dir
-  size: 96300768
-  nfiles: 6
+- md5: ef674512f5b037460aba84f841f90e16.dir
+  size: 48150384
+  nfiles: 3
   hash: md5
   path: svd
