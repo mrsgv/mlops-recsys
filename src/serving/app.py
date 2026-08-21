@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from time import perf_counter
 
 from fastapi import FastAPI, HTTPException
+from prometheus_client import Counter, Histogram, make_asgi_app
 
 from src.retrieval.ials_retriever import (
     IALSFaissRetriever,
@@ -21,6 +22,25 @@ from src.serving.service import (
     RecommendationService,
 )
 
+RECOMMENDATION_REQUESTS = Counter(
+    "recommendation_requests_total",
+    "Total number of recommendation requests.",
+)
+
+RECOMMENDATION_ERRORS = Counter(
+    "recommendation_errors_total",
+    "Total number of failed recommendation requests.",
+)
+
+RECOMMENDATION_LATENCY = Histogram(
+    "recommendation_latency_seconds",
+    "Recommendation request latency in seconds.",
+)
+
+RECOMMENDATION_RESULTS = Counter(
+    "recommendation_results_total",
+    "Total number of recommendations returned.",
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -101,6 +121,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+metrics_app = make_asgi_app()
+app.mount("/metrics", metrics_app)
 
 @app.get(
     "/health",
@@ -156,16 +178,14 @@ def recommend(
     request: RecommendationRequest,
 ) -> RecommendationResponse:
     """Return Top-K recommendations for an encoded user."""
+
     if service is None:
         raise HTTPException(
             status_code=503,
             detail="Recommendation model is not loaded.",
         )
 
-    if (
-        request.k
-        > settings.max_recommendations
-    ):
+    if request.k > settings.max_recommendations:
         raise HTTPException(
             status_code=400,
             detail=(
@@ -174,6 +194,7 @@ def recommend(
             ),
         )
 
+    RECOMMENDATION_REQUESTS.inc()
     start_time = perf_counter()
 
     try:
@@ -182,6 +203,8 @@ def recommend(
             k=request.k,
         )
     except ValueError as exc:
+        RECOMMENDATION_ERRORS.inc()
+
         logger.warning(
             "Invalid recommendation request: %s",
             exc,
@@ -193,6 +216,8 @@ def recommend(
         ) from exc
 
     except RuntimeError as exc:
+        RECOMMENDATION_ERRORS.inc()
+
         logger.error(
             "Recommendation generation failed: %s",
             exc,
@@ -200,10 +225,15 @@ def recommend(
 
         raise HTTPException(
             status_code=500,
-            detail=(
-                "Recommendation generation failed."
-            ),
+            detail="Recommendation generation failed.",
         ) from exc
+
+    finally:
+        RECOMMENDATION_LATENCY.observe(
+            perf_counter() - start_time
+        )
+
+    RECOMMENDATION_RESULTS.inc(len(result))
 
     latency_ms = (
         perf_counter()
@@ -225,24 +255,16 @@ def recommend(
         Recommendation(
             rank=int(row.rank),
             item_idx=int(row.item_idx),
-            parent_asin=str(
-                row.parent_asin
-            ),
+            parent_asin=str(row.parent_asin),
             score=float(row.score),
         )
-        for row in result.itertuples(
-            index=False
-        )
+        for row in result.itertuples(index=False)
     ]
 
     return RecommendationResponse(
         user_idx=request.user_idx,
-        model=(
-            service.model_info.model_type
-        ),
-        model_version=(
-            service.model_info.model_version
-        ),
+        model=service.model_info.model_type,
+        model_version=service.model_info.model_version,
         k=request.k,
         recommendations=recommendations,
     )
