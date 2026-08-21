@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -21,6 +22,17 @@ MODEL_DIR = Path("models/ials")
 MODEL_PATH = (
     MODEL_DIR / "ials_model.npz"
 )
+
+# Records which MLflow run produced the artifact next to it, so the
+# evaluation, selection and deployment-manifest steps can trace a served
+# model back to its experiment run without guessing.
+TRAINING_RUN_PATH = (
+    MODEL_DIR / "training_run.json"
+)
+
+EXPERIMENT_NAME = "ials"
+
+RUN_NAME = "ials-v1-binary"
 
 TOP_K = 10
 
@@ -46,6 +58,80 @@ def build_ground_truth(
         .apply(set)
         .to_dict()
     )
+
+
+def build_training_run_record(
+    run_id: str,
+    tracking_uri: str,
+    params: dict[str, object],
+    metrics: dict[str, float | int],
+    training_time_seconds: float,
+) -> dict[str, object]:
+    """
+    Assemble the record that ties a saved artifact to its MLflow run.
+
+    Downstream pipeline steps read this instead of querying MLflow, which
+    keeps them runnable when the tracking server is unreachable.
+    """
+    return {
+        "model_type": "ials",
+        "mlflow": {
+            "run_id": run_id,
+            "experiment": EXPERIMENT_NAME,
+            "run_name": RUN_NAME,
+            "tracking_uri": tracking_uri,
+        },
+        "params": dict(params),
+        "metrics": {
+            key: float(value)
+            for key, value in metrics.items()
+            if key != "users_evaluated"
+        },
+        "users_evaluated": int(
+            metrics["users_evaluated"]
+        ),
+        "training_time_seconds": float(
+            training_time_seconds
+        ),
+        "top_k": TOP_K,
+        "artifacts": {
+            "ials_model": str(MODEL_PATH),
+        },
+        "dataset": {
+            "interactions": DATA_PATH,
+        },
+    }
+
+
+def write_training_run(
+    run_id: str,
+    params: dict[str, object],
+    metrics: dict[str, float | int],
+    training_time_seconds: float,
+) -> dict[str, object]:
+    """Write the training-run record next to the model artifact."""
+    record = build_training_run_record(
+        run_id=run_id,
+        tracking_uri=mlflow.get_tracking_uri(),
+        params=params,
+        metrics=metrics,
+        training_time_seconds=training_time_seconds,
+    )
+
+    TRAINING_RUN_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    TRAINING_RUN_PATH.write_text(
+        json.dumps(
+            record,
+            indent=2,
+        )
+        + "\n"
+    )
+
+    return record
 
 
 def main() -> None:
@@ -147,33 +233,49 @@ def main() -> None:
         )
 
     mlflow.set_experiment(
-        "ials"
+        EXPERIMENT_NAME
     )
 
     with mlflow.start_run(
-        run_name="ials-v1-binary"
-    ):
+        run_name=RUN_NAME
+    ) as run:
 
-        mlflow.log_params(
+        run_id = run.info.run_id
+
+        print(f"MLflow run ID: {run_id}")
+
+        # Tags make the run findable as a deployment candidate and record
+        # that this model is servable through the FAISS retrieval path.
+        mlflow.set_tags(
             {
-                "model": "iALS",
-                "factors": FACTORS,
-                "regularization": REGULARIZATION,
-                "iterations": ITERATIONS,
-                "alpha": ALPHA,
-                "random_seed": RANDOM_SEED,
-                "num_users": num_users,
-                "num_items": num_items,
-                "train_interactions": len(
-                    train_df
-                ),
-                "test_interactions": len(
-                    test_df
-                ),
-                "feedback_type": "binary",
-                "top_k": TOP_K,
+                "model_type": "ials",
+                "retrieval": "faiss",
+                "stage": "candidate",
+                "dataset": DATA_PATH,
             }
         )
+
+        params = {
+            "model": "iALS",
+            "factors": FACTORS,
+            "regularization": REGULARIZATION,
+            "iterations": ITERATIONS,
+            "alpha": ALPHA,
+            "random_seed": RANDOM_SEED,
+            "num_users": num_users,
+            "num_items": num_items,
+            "train_interactions": len(
+                train_df
+            ),
+            "test_interactions": len(
+                test_df
+            ),
+            "feedback_type": "binary",
+            "top_k": TOP_K,
+            "dataset_path": DATA_PATH,
+        }
+
+        mlflow.log_params(params)
 
         # -----------------------------------------------------
         # 6. Train
@@ -318,6 +420,26 @@ def main() -> None:
         print(
             f"\nModel saved to: "
             f"{MODEL_PATH}"
+        )
+
+        # -----------------------------------------------------
+        # 10. Record the run alongside the artifact
+        # -----------------------------------------------------
+
+        write_training_run(
+            run_id=run_id,
+            params=params,
+            metrics=metrics,
+            training_time_seconds=training_time,
+        )
+
+        mlflow.log_artifact(
+            str(TRAINING_RUN_PATH)
+        )
+
+        print(
+            f"Run metadata saved to: "
+            f"{TRAINING_RUN_PATH}"
         )
 
     print("\n=== iALS Benchmark Complete ===")
