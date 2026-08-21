@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 import pandas as pd
 
@@ -6,7 +8,9 @@ from src.data.validate_data import (
     DataValidationError,
     check_contiguous_index,
     validate_item_mapping_frame,
+    validate_processed,
     validate_processed_frame,
+    validate_raw,
     validate_raw_frame,
 )
 
@@ -295,6 +299,201 @@ class TestValidateItemMappingFrame(unittest.TestCase):
             validate_item_mapping_frame(
                 mapping,
                 num_items=3,
+            )
+
+
+class TestValidateFilesOnDisk(unittest.TestCase):
+    """
+    Exercise the file-reading entry points the Airflow tasks call.
+
+    The frame validators are covered above; these tests cover what the
+    pipeline actually invokes: reading gzipped CSV and Parquet — including
+    Parquet written as a directory, which is what Spark produces — and
+    failing usefully when a file has not been pulled.
+    """
+
+    def setUp(self):
+        self.directory = (
+            tempfile.TemporaryDirectory()
+        )
+
+        self.root = Path(
+            self.directory.name
+        )
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def write_raw(self) -> Path:
+        path = self.root / "raw.csv.gz"
+
+        make_raw_frame().to_csv(
+            path,
+            index=False,
+            compression="gzip",
+        )
+
+        return path
+
+    def write_processed(
+        self,
+        as_directory: bool = False,
+    ) -> tuple[Path, Path]:
+        df = make_processed_frame()
+
+        interactions = (
+            self.root / "video_games.parquet"
+        )
+
+        if as_directory:
+            # Mimic a Spark write: a directory of part files.
+            interactions.mkdir()
+
+            half = len(df) // 2
+
+            df.iloc[:half].to_parquet(
+                interactions / "part-0.parquet",
+                index=False,
+            )
+
+            df.iloc[half:].to_parquet(
+                interactions / "part-1.parquet",
+                index=False,
+            )
+        else:
+            df.to_parquet(
+                interactions,
+                index=False,
+            )
+
+        mapping = (
+            self.root / "item_mapping.parquet"
+        )
+
+        pd.DataFrame(
+            {
+                "item_idx": range(3_000),
+                "parent_asin": [
+                    f"B{index:05d}"
+                    for index in range(3_000)
+                ],
+            }
+        ).to_parquet(
+            mapping,
+            index=False,
+        )
+
+        return interactions, mapping
+
+    def test_validates_gzipped_raw_csv(self):
+        report = validate_raw(
+            str(self.write_raw())
+        )
+
+        self.assertEqual(
+            report["rows"],
+            20_000,
+        )
+
+        self.assertFalse(report["sampled"])
+
+    def test_sample_rows_limits_the_read(self):
+        # The floor still applies, so a sample below it must fail rather
+        # than silently pass a truncated check.
+        with self.assertRaises(
+            DataValidationError
+        ):
+            validate_raw(
+                str(self.write_raw()),
+                sample_rows=100,
+            )
+
+    def test_validates_processed_parquet_file(self):
+        interactions, mapping = (
+            self.write_processed()
+        )
+
+        report = validate_processed(
+            str(interactions),
+            str(mapping),
+        )
+
+        self.assertEqual(
+            report["users"],
+            4_000,
+        )
+
+        self.assertEqual(
+            report["items"],
+            3_000,
+        )
+
+        self.assertEqual(
+            report["item_mapping"]["rows"],
+            3_000,
+        )
+
+    def test_validates_spark_style_parquet_directory(self):
+        interactions, mapping = (
+            self.write_processed(
+                as_directory=True,
+            )
+        )
+
+        report = validate_processed(
+            str(interactions),
+            str(mapping),
+        )
+
+        self.assertEqual(
+            report["interactions"],
+            len(make_processed_frame()),
+        )
+
+    def test_missing_file_points_at_dvc_pull(self):
+        _, mapping = self.write_processed()
+
+        with self.assertRaises(
+            DataValidationError
+        ) as context:
+            validate_processed(
+                str(self.root / "absent.parquet"),
+                str(mapping),
+            )
+
+        self.assertIn(
+            "dvc pull",
+            str(context.exception),
+        )
+
+    def test_mapping_smaller_than_item_space_fails(self):
+        interactions, _ = (
+            self.write_processed()
+        )
+
+        short_mapping = (
+            self.root / "short_mapping.parquet"
+        )
+
+        pd.DataFrame(
+            {
+                "item_idx": range(2_999),
+                "parent_asin": [
+                    f"B{index:05d}"
+                    for index in range(2_999)
+                ],
+            }
+        ).to_parquet(
+            short_mapping,
+            index=False,
+        )
+
+        with self.assertRaises(
+            DataValidationError
+        ):
+            validate_processed(
+                str(interactions),
+                str(short_mapping),
             )
 
 

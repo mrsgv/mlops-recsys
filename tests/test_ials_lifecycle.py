@@ -11,14 +11,20 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+import mlflow
+from mlflow.tracking import MlflowClient
 
 from src.evaluation.evaluate_ials import (
     build_evaluation_record,
     compare_with_training_metrics,
     load_training_run,
+    log_to_mlflow,
 )
 from src.models.train_ials import (
     build_training_run_record,
+    write_training_run,
 )
 
 
@@ -247,6 +253,139 @@ class TestEvaluationRecord(unittest.TestCase):
             record["top_k"],
             10,
         )
+
+
+class TestWriteTrainingRun(unittest.TestCase):
+
+    def test_writes_record_beside_the_artifact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = (
+                Path(directory)
+                / "ials"
+                / "training_run.json"
+            )
+
+            with mock.patch(
+                "src.models.train_ials"
+                ".TRAINING_RUN_PATH",
+                path,
+            ):
+                returned = write_training_run(
+                    run_id="abc123",
+                    params={"factors": 64},
+                    metrics=METRICS,
+                    training_time_seconds=9.0,
+                )
+
+            # The parent directory is created on demand, because training
+            # may run before models/ials exists.
+            self.assertTrue(path.exists())
+
+            on_disk = json.loads(
+                path.read_text()
+            )
+
+            self.assertEqual(
+                on_disk["mlflow"]["run_id"],
+                "abc123",
+            )
+
+            self.assertEqual(
+                on_disk,
+                returned,
+            )
+
+            # Later steps read this file, so it must round-trip through
+            # JSON without losing the metrics.
+            self.assertAlmostEqual(
+                on_disk["metrics"]["recall_at_10"],
+                0.038064,
+            )
+
+
+class TestLogToMLflow(unittest.TestCase):
+    """
+    Verify artifact-evaluation metrics reach the training run.
+
+    A temporary file-backed tracking store is used, so this exercises the
+    real MLflow client without needing the Cloud Run server.
+    """
+
+    def test_attaches_eval_metrics_to_existing_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tracking_uri = (
+                f"file:{directory}/mlruns"
+            )
+
+            mlflow.set_tracking_uri(
+                tracking_uri
+            )
+
+            mlflow.set_experiment(
+                "test-ials"
+            )
+
+            with mlflow.start_run() as run:
+                run_id = run.info.run_id
+
+                mlflow.log_metric(
+                    "recall_at_10",
+                    0.038064,
+                )
+
+            log_to_mlflow(
+                run_id=run_id,
+                metrics=METRICS,
+                tracking_uri=tracking_uri,
+            )
+
+            client = MlflowClient(
+                tracking_uri=tracking_uri
+            )
+
+            reloaded = client.get_run(run_id)
+
+            # eval_ prefixed names so the artifact numbers never overwrite
+            # the numbers training logged under the same run.
+            self.assertAlmostEqual(
+                reloaded.data.metrics[
+                    "eval_recall_at_10"
+                ],
+                0.038064,
+            )
+
+            self.assertAlmostEqual(
+                reloaded.data.metrics[
+                    "eval_ndcg_at_10"
+                ],
+                0.020348,
+            )
+
+            self.assertNotIn(
+                "eval_users_evaluated",
+                reloaded.data.metrics,
+            )
+
+            # The original metric is untouched.
+            self.assertAlmostEqual(
+                reloaded.data.metrics[
+                    "recall_at_10"
+                ],
+                0.038064,
+            )
+
+            self.assertEqual(
+                reloaded.data.tags[
+                    "artifact_evaluated"
+                ],
+                "true",
+            )
+
+            # Logging must not leave the run open.
+            self.assertEqual(
+                reloaded.info.status,
+                "FINISHED",
+            )
 
 
 if __name__ == "__main__":
