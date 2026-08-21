@@ -8,7 +8,6 @@ from pyspark.sql.types import (
     LongType,
 )
 
-
 KAFKA_BOOTSTRAP = "localhost:9092"
 TOPIC = "user-interactions"
 
@@ -27,6 +26,10 @@ schema = StructType([
 spark = (
     SparkSession.builder
     .appName("MLOpsKafkaConsumer")
+    .config(
+        "spark.jars.packages",
+        "org.apache.spark:spark-sql-kafka-0-10_2.13:4.2.0",
+    )
     .getOrCreate()
 )
 
@@ -56,7 +59,7 @@ events = (
     .select(
         from_json(
             col("value").cast("string"),
-            schema
+            schema,
         ).alias("event")
     )
     .select("event.*")
