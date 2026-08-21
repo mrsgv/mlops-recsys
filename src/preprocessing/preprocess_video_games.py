@@ -1,36 +1,36 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
-import pandas as pd
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
 
-INPUT_PATH = "data/raw/Video_Games.csv.gz"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-INTERACTIONS_OUTPUT_PATH = (
-    "data/processed/video_games.parquet"
+INPUT_PATH = str(PROJECT_ROOT / "data/raw/Video_Games.csv.gz")
+
+INTERACTIONS_OUTPUT_PATH = str(
+    PROJECT_ROOT / "data/processed/video_games.parquet"
 )
 
-ITEM_MAPPING_OUTPUT_PATH = (
-    "data/processed/item_mapping.parquet"
+ITEM_MAPPING_OUTPUT_PATH = str(
+    PROJECT_ROOT / "data/processed/item_mapping.parquet"
 )
 
 
-def main() -> None:
-    print("\n=== Reading Input ===")
-
-    df = pd.read_csv(
-        INPUT_PATH,
-        compression="gzip",
+def create_spark_session() -> SparkSession:
+    return (
+        SparkSession.builder
+        .appName("VideoGamesPreprocessing")
+        .master("local[*]")
+        .getOrCreate()
     )
 
-    print(f"Rows: {len(df):,}")
-    print(f"Columns: {list(df.columns)}")
 
-    # ---------------------------------------------------------
-    # 1. Validate input schema
-    # ---------------------------------------------------------
-
+def validate_schema(df) -> None:
     required_columns = {
         "user_id",
         "parent_asin",
@@ -48,222 +48,290 @@ def main() -> None:
             f"{sorted(missing_columns)}"
         )
 
-    # ---------------------------------------------------------
-    # 2. Validate values
-    # ---------------------------------------------------------
 
-    print("\n=== Null Counts ===")
-    print(df.isnull().sum())
+def main() -> None:
+    spark = create_spark_session()
 
-    invalid_ratings = (
-        (df["rating"] < 1)
-        | (df["rating"] > 5)
-    ).sum()
+    try:
+        print("\n=== Reading Input ===")
 
-    print("\n=== Invalid Ratings ===")
-    print(invalid_ratings)
-
-    if invalid_ratings > 0:
-        raise ValueError(
-            f"Found {invalid_ratings} invalid ratings."
+        df = (
+            spark.read
+            .option("header", "true")
+            .option("inferSchema", "true")
+            .csv(INPUT_PATH)
         )
 
-    # ---------------------------------------------------------
-    # 3. Remove duplicate user-product interactions
-    # ---------------------------------------------------------
+        print(f"Rows: {df.count():,}")
+        print(f"Columns: {df.columns}")
 
-    duplicate_count = df.duplicated(
-        subset=[
-            "user_id",
-            "parent_asin",
-        ]
-    ).sum()
+        # -----------------------------------------------------
+        # 1. Validate input schema
+        # -----------------------------------------------------
 
-    print("\n=== Duplicate User-Product Pairs ===")
-    print(duplicate_count)
+        validate_schema(df)
 
-    df = df.drop_duplicates(
-        subset=[
-            "user_id",
-            "parent_asin",
-        ]
-    ).copy()
+        # -----------------------------------------------------
+        # 2. Validate nulls
+        # -----------------------------------------------------
 
-    # ---------------------------------------------------------
-    # 4. Create deterministic user IDs
-    # ---------------------------------------------------------
+        print("\n=== Null Counts ===")
 
-    user_ids = {
-        user_id: idx
-        for idx, user_id in enumerate(
-            sorted(df["user_id"].unique())
-        )
-    }
-
-    # ---------------------------------------------------------
-    # 5. Create deterministic item IDs
-    # ---------------------------------------------------------
-
-    item_ids = {
-        item_id: idx
-        for idx, item_id in enumerate(
-            sorted(df["parent_asin"].unique())
-        )
-    }
-
-    # ---------------------------------------------------------
-    # 6. Apply mappings
-    # ---------------------------------------------------------
-
-    df["user_idx"] = df["user_id"].map(
-        user_ids
-    )
-
-    df["item_idx"] = df["parent_asin"].map(
-        item_ids
-    )
-
-    # ---------------------------------------------------------
-    # 7. Validate mappings
-    # ---------------------------------------------------------
-
-    if df["user_idx"].isna().any():
-        raise ValueError(
-            "Some user IDs could not be mapped."
+        null_counts = df.select(
+            *[
+                F.sum(
+                    F.col(column).isNull().cast("long")
+                ).alias(column)
+                for column in df.columns
+            ]
         )
 
-    if df["item_idx"].isna().any():
-        raise ValueError(
-            "Some item IDs could not be mapped."
+        null_counts.show()
+
+        # -----------------------------------------------------
+        # 3. Validate ratings
+        # -----------------------------------------------------
+
+        invalid_ratings = (
+            df.filter(
+                (F.col("rating") < 1)
+                | (F.col("rating") > 5)
+            )
+            .count()
         )
 
-    # ---------------------------------------------------------
-    # 8. Build interaction dataset
-    # ---------------------------------------------------------
+        print("\n=== Invalid Ratings ===")
+        print(invalid_ratings)
 
-    processed = df[
-        [
-            "user_idx",
-            "item_idx",
-            "rating",
-            "timestamp",
-        ]
-    ].copy()
+        if invalid_ratings > 0:
+            raise ValueError(
+                f"Found {invalid_ratings} invalid ratings."
+            )
 
-    # ---------------------------------------------------------
-    # 9. Build item mapping dataset
-    # ---------------------------------------------------------
+        # -----------------------------------------------------
+        # 4. Remove duplicate user-product interactions
+        # -----------------------------------------------------
 
-    item_mapping = pd.DataFrame(
-        [
-            {
-                "item_idx": item_idx,
-                "parent_asin": parent_asin,
-            }
-            for parent_asin, item_idx in item_ids.items()
-        ]
-    ).sort_values(
-        "item_idx"
-    ).reset_index(drop=True)
-
-    # ---------------------------------------------------------
-    # 10. Validate item mapping
-    # ---------------------------------------------------------
-
-    if len(item_mapping) != len(item_ids):
-        raise ValueError(
-            "Unexpected item mapping size."
+        duplicate_pairs = (
+            df.groupBy(
+                "user_id",
+                "parent_asin",
+            )
+            .count()
+            .filter(F.col("count") > 1)
+            .count()
         )
 
-    if item_mapping["item_idx"].duplicated().any():
-        raise ValueError(
-            "Duplicate item_idx values found."
+        print("\n=== Duplicate User-Product Pairs ===")
+        print(duplicate_pairs)
+
+        df = df.dropDuplicates(
+            ["user_id", "parent_asin"]
         )
 
-    if item_mapping["parent_asin"].duplicated().any():
-        raise ValueError(
-            "Duplicate parent_asin values found."
+        # -----------------------------------------------------
+        # 5. Create deterministic user IDs
+        # -----------------------------------------------------
+
+        print("\n=== Creating User Mapping ===")
+
+        user_window = Window.orderBy("user_id")
+
+        user_mapping = (
+            df.select("user_id")
+            .distinct()
+            .withColumn(
+                "user_idx",
+                F.row_number().over(user_window) - 1,
+            )
         )
 
-    expected_item_indices = list(
-        range(len(item_mapping))
-    )
+        # -----------------------------------------------------
+        # 6. Create deterministic item IDs
+        # -----------------------------------------------------
 
-    actual_item_indices = (
-        item_mapping["item_idx"].tolist()
-    )
+        print("\n=== Creating Item Mapping ===")
 
-    if actual_item_indices != expected_item_indices:
-        raise ValueError(
-            "item_idx values are not contiguous "
-            "starting from zero."
+        item_window = Window.orderBy("parent_asin")
+
+        item_mapping = (
+            df.select("parent_asin")
+            .distinct()
+            .withColumn(
+                "item_idx",
+                F.row_number().over(item_window) - 1,
+            )
+            .select(
+                "item_idx",
+                "parent_asin",
+            )
         )
 
-    # ---------------------------------------------------------
-    # 11. Save outputs
-    # ---------------------------------------------------------
+        # -----------------------------------------------------
+        # 7. Apply mappings
+        # -----------------------------------------------------
 
-    os.makedirs(
-        "data/processed",
-        exist_ok=True,
-    )
+        processed = (
+            df
+            .join(
+                user_mapping,
+                on="user_id",
+                how="inner",
+            )
+            .join(
+                item_mapping,
+                on="parent_asin",
+                how="inner",
+            )
+            .select(
+                "user_idx",
+                "item_idx",
+                "rating",
+                "timestamp",
+            )
+        )
 
-    processed.to_parquet(
-        INTERACTIONS_OUTPUT_PATH,
-        index=False,
-    )
+        # -----------------------------------------------------
+        # 8. Validate mappings
+        # -----------------------------------------------------
 
-    item_mapping.to_parquet(
-        ITEM_MAPPING_OUTPUT_PATH,
-        index=False,
-    )
+        missing_user_mapping = (
+            processed
+            .filter(F.col("user_idx").isNull())
+            .count()
+        )
 
-    # ---------------------------------------------------------
-    # 12. Summary
-    # ---------------------------------------------------------
+        missing_item_mapping = (
+            processed
+            .filter(F.col("item_idx").isNull())
+            .count()
+        )
 
-    print("\n=== Processed Dataset ===")
-    print(
-        f"Interactions: "
-        f"{len(processed):,}"
-    )
-    print(
-        f"Users: "
-        f"{processed['user_idx'].nunique():,}"
-    )
-    print(
-        f"Products: "
-        f"{processed['item_idx'].nunique():,}"
-    )
+        if missing_user_mapping > 0:
+            raise ValueError(
+                "Some user IDs could not be mapped."
+            )
 
-    print("\n=== Item Mapping ===")
-    print(
-        f"Items: "
-        f"{len(item_mapping):,}"
-    )
+        if missing_item_mapping > 0:
+            raise ValueError(
+                "Some item IDs could not be mapped."
+            )
 
-    print("\n=== Interaction Schema ===")
-    print(processed.dtypes)
+        # -----------------------------------------------------
+        # 9. Validate item mapping
+        # -----------------------------------------------------
 
-    print("\n=== Item Mapping Schema ===")
-    print(item_mapping.dtypes)
+        item_count = item_mapping.count()
 
-    print("\n=== Sample Item Mapping ===")
-    print(
-        item_mapping
-        .head(10)
-        .to_string(index=False)
-    )
+        distinct_item_indices = (
+            item_mapping
+            .select("item_idx")
+            .distinct()
+            .count()
+        )
 
-    print("\n=== Saved Outputs ===")
-    print(
-        f"Interactions: "
-        f"{INTERACTIONS_OUTPUT_PATH}"
-    )
-    print(
-        f"Item mapping: "
-        f"{ITEM_MAPPING_OUTPUT_PATH}"
-    )
+        if distinct_item_indices != item_count:
+            raise ValueError(
+                "Duplicate item_idx values found."
+            )
+
+        expected_max_item_idx = item_count - 1
+
+        actual_max_item_idx = (
+            item_mapping
+            .agg(F.max("item_idx"))
+            .first()[0]
+        )
+
+        if actual_max_item_idx != expected_max_item_idx:
+            raise ValueError(
+                "item_idx values are not contiguous "
+                "starting from zero."
+            )
+
+        # -----------------------------------------------------
+        # 10. Summary
+        # -----------------------------------------------------
+
+        print("\n=== Processed Dataset ===")
+
+        print(
+            f"Interactions: "
+            f"{processed.count():,}"
+        )
+
+        print(
+            f"Users: "
+            f"{processed.select('user_idx').distinct().count():,}"
+        )
+
+        print(
+            f"Products: "
+            f"{processed.select('item_idx').distinct().count():,}"
+        )
+
+        print("\n=== Item Mapping ===")
+
+        print(
+            f"Items: "
+            f"{item_count:,}"
+        )
+
+        print("\n=== Interaction Schema ===")
+        processed.printSchema()
+
+        print("\n=== Item Mapping Schema ===")
+        item_mapping.printSchema()
+
+        print("\n=== Sample Item Mapping ===")
+
+        (
+            item_mapping
+            .orderBy("item_idx")
+            .show(10, truncate=False)
+        )
+
+        # -----------------------------------------------------
+        # 11. Save outputs
+        # -----------------------------------------------------
+
+        os.makedirs(
+            PROJECT_ROOT / "data/processed",
+            exist_ok=True,
+        )
+
+        (
+            processed
+            .write
+            .mode("overwrite")
+            .parquet(
+                INTERACTIONS_OUTPUT_PATH
+            )
+        )
+
+        (
+            item_mapping
+            .write
+            .mode("overwrite")
+            .parquet(
+                ITEM_MAPPING_OUTPUT_PATH
+            )
+        )
+
+        print("\n=== Saved Outputs ===")
+
+        print(
+            f"Interactions: "
+            f"{INTERACTIONS_OUTPUT_PATH}"
+        )
+
+        print(
+            f"Item mapping: "
+            f"{ITEM_MAPPING_OUTPUT_PATH}"
+        )
+
+    finally:
+        spark.stop()
 
 
 if __name__ == "__main__":

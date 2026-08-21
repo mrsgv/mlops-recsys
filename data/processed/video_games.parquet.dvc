@@ -1,5 +1,6 @@
 outs:
-- md5: 5f76d4fdb4399723ecf93896cb142cb3
-  size: 8906638
+- md5: 7dfc5ebe082202accaaa456bd254c03e.dir
+  size: 11588361
   hash: md5
   path: video_games.parquet
+  nfiles: 18
