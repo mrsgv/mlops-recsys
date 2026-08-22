@@ -36,11 +36,18 @@ class TestRetrievalIntegration(unittest.TestCase):
         )
 
     def test_real_index_returns_top_k(self):
+        # The query vector must match whatever the promoted model's factor
+        # dimension is, which depends on the winning hyperparameters — 64 was
+        # only ever true of the first iALS champion.
+        dimension = (
+            self.retriever.retriever.dimension
+        )
+
         result = (
             self.retriever
             .recommend_from_vector(
                 np.ones(
-                    64,
+                    dimension,
                     dtype=np.float32,
                 ),
                 k=10,
