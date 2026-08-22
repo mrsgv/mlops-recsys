@@ -1,9 +1,23 @@
+import json
 import unittest
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from src.serving.app import app
+from src.serving.config import settings
+
+
+def index_dimension() -> int:
+    """
+    Read the promoted index's factor dimension from its metadata.
+
+    The dimension follows the winning model's hyperparameters, so the test
+    reads it rather than asserting the 64 that happened to be true of the
+    original iALS champion.
+    """
+    with open(settings.faiss_metadata_path) as handle:
+        return int(json.load(handle)["dimension"])
 
 
 REQUIRED_ARTIFACTS = [
@@ -89,9 +103,12 @@ class TestAPI(unittest.TestCase):
 
         body = response.json()
 
+        # The API reports the family it was configured with. Asserting a
+        # literal here would break every time a different family wins the
+        # sweep, which is now an expected outcome rather than a regression.
         self.assertEqual(
             body["model_type"],
-            "ials",
+            settings.model_type,
         )
 
         self.assertEqual(
@@ -116,7 +133,7 @@ class TestAPI(unittest.TestCase):
 
         self.assertEqual(
             body["embedding_dimension"],
-            64,
+            index_dimension(),
         )
 
         self.assertEqual(
@@ -151,7 +168,7 @@ class TestAPI(unittest.TestCase):
 
         self.assertEqual(
             body["model"],
-            "ials",
+            settings.model_type,
         )
 
         self.assertEqual(

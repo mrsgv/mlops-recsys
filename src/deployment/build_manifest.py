@@ -149,6 +149,17 @@ def describe_artifact(
         "exists": resolved.exists(),
         "is_directory": resolved.is_dir(),
         "dvc": pointer,
+        # The path 'dvc add' must be given to produce THIS pointer file.
+        # It is not always the artifact path: models/promoted.dvc versions
+        # the whole models/promoted directory, so telling someone to run
+        # 'dvc add models/promoted/model.npz' would create a different
+        # pointer and leave the manifest still reporting the artifact as
+        # unversioned.
+        "dvc_target": (
+            dvc_file[: -len(".dvc")]
+            if dvc_file.endswith(".dvc")
+            else dvc_file
+        ),
     }
 
 
@@ -228,10 +239,15 @@ def collect_warnings(
             )
 
         if details["dvc"] is None:
+            target = details.get(
+                "dvc_target",
+                details["path"],
+            )
+
             warnings.append(
                 f"{role} is not DVC-tracked, so this deployment "
                 "cannot be reproduced from a version. Run "
-                f"'dvc add {details['path']} && dvc push'."
+                f"'dvc add {target} && dvc push'."
             )
 
     return warnings
