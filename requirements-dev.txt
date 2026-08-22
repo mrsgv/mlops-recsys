@@ -1,0 +1,13 @@
+# Development and CI dependencies.
+#
+# The serving image installs requirements.txt only, so test tooling never
+# reaches production. CI installs both:
+#
+#     pip install -r requirements-dev.txt
+
+-r requirements.txt
+
+pytest==9.1.1
+
+# Required by fastapi.testclient / starlette.testclient in tests/test_api.py.
+httpx2==2.12.0
