@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 import numpy as np
 
@@ -7,10 +8,29 @@ from src.retrieval.retrieve import (
 )
 
 
+REQUIRED_ARTIFACTS = [
+    Path("models/retrieval/faiss.index"),
+    Path("models/retrieval/index_metadata.json"),
+    Path("data/processed/item_mapping.parquet"),
+]
+
+
 class TestRetrievalIntegration(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        missing = [
+            str(path)
+            for path in REQUIRED_ARTIFACTS
+            if not path.exists()
+        ]
+
+        if missing:
+            raise unittest.SkipTest(
+                "Required retrieval artifacts are missing: "
+                + ", ".join(missing)
+            )
+
         cls.retriever = (
             RecommendationRetriever()
         )
