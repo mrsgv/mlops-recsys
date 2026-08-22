@@ -1,0 +1,7 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+prometheus-client
+numpy==2.5.1
+pandas
+pyarrow
+faiss-cpu==1.15.0

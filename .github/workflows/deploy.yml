@@ -1,0 +1,97 @@
+name: CD - Deploy Recommendation API
+
+on:
+  push:
+    branches:
+      - develop
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: mlops-project-505217
+  REGION: asia-south1
+  REPOSITORY: cloud-run-source-deploy
+  IMAGE_NAME: mlops-recsys-api
+  SERVICE_NAME: recommendation-api
+
+jobs:
+  deploy:
+    name: Deploy promoted model
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read promoted model version
+        id: model
+        shell: bash
+        run: |
+          MODEL_VERSION=$(python - <<'PY'
+          import json
+
+          with open("models/deployment/deployment_manifest.json") as f:
+              manifest = json.load(f)
+
+          print(manifest["model"]["version"])
+          PY
+          )
+
+          echo "MODEL_VERSION=$MODEL_VERSION"
+          echo "model_version=$MODEL_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy promoted image to Cloud Run
+        run: |
+          IMAGE_URI="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ steps.model.outputs.model_version }}"
+
+          echo "Deploying: $IMAGE_URI"
+
+          gcloud run deploy "${{ env.SERVICE_NAME }}" \
+            --image="$IMAGE_URI" \
+            --project="${{ env.PROJECT_ID }}" \
+            --region="${{ env.REGION }}" \
+            --platform=managed \
+            --port=8000 \
+            --memory=1Gi \
+            --cpu=1 \
+            --min-instances=0 \
+            --max-instances=3 \
+            --allow-unauthenticated \
+            --set-env-vars="MODEL_VERSION=${{ steps.model.outputs.model_version }}"
+
+      - name: Smoke test Cloud Run
+        shell: bash
+        run: |
+          SERVICE_URL=$(gcloud run services describe \
+            "${{ env.SERVICE_NAME }}" \
+            --project="${{ env.PROJECT_ID }}" \
+            --region="${{ env.REGION }}" \
+            --format="value(status.url)")
+
+          echo "Service URL: $SERVICE_URL"
+
+          for i in {1..12}; do
+            if curl -fsS "$SERVICE_URL/health"; then
+              echo
+              echo "Cloud Run health check passed."
+              exit 0
+            fi
+
+            echo "Waiting for Cloud Run..."
+            sleep 5
+          done
+
+          echo "Cloud Run health check failed."
+          exit 1
