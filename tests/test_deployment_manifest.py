@@ -36,8 +36,13 @@ from src.deployment.build_manifest import (
 SELECTION = {
     "primary_metric": "recall_at_10",
     "selected": {
-        "name": "ials",
+        "name": "als-f256-r0p1-i20-a40",
+        "family": "als",
         "model_type": "ials",
+        "params": {
+            "factors": 256,
+            "alpha": 40.0,
+        },
         "metrics": {
             "recall_at_10": 0.038064,
             "ndcg_at_10": 0.020348,
@@ -206,7 +211,8 @@ class TestDeriveModelVersion(unittest.TestCase):
         # same version, and the version resolves back through DVC.
         self.assertEqual(
             derive_model_version(
-                make_artifacts()
+                make_artifacts(),
+                model_type="ials",
             ),
             "ials-ef674512",
         )
@@ -214,7 +220,8 @@ class TestDeriveModelVersion(unittest.TestCase):
     def test_untracked_artifact_is_labelled_unversioned(self):
         self.assertEqual(
             derive_model_version(
-                make_artifacts(md5=None)
+                make_artifacts(md5=None),
+                model_type="ials",
             ),
             "ials-unversioned",
         )
@@ -449,8 +456,8 @@ class TestServingEnvContract(unittest.TestCase):
             )
 
             self.assertEqual(
-                settings.ials_model_path,
-                ARTIFACTS["ials_model"][0],
+                settings.model_path,
+                ARTIFACTS["promoted_model"][0],
             )
 
             self.assertEqual(

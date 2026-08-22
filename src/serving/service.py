@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from src.retrieval.ials_retriever import (
-    IALSFaissRetriever,
+from src.retrieval.factor_retriever import (
+    FactorFaissRetriever,
 )
 
 
@@ -26,13 +26,13 @@ class RecommendationService:
     Application-level recommendation service.
 
     HTTP/API code should interact with this service rather than
-    directly calling the underlying iALS retriever.
+    directly calling the underlying retriever.
     """
 
     def __init__(
         self,
-        retriever: IALSFaissRetriever,
-        model_type: str = "ials",
+        retriever: FactorFaissRetriever,
+        model_type: str = "als",
         model_version: str = "1",
     ) -> None:
         self.retriever = retriever

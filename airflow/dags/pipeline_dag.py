@@ -9,11 +9,11 @@ model, and any step can be reproduced by hand from the command line.
     validate_raw_data
         -> preprocess
         -> validate_processed_data
-        -> train_ials
-        -> evaluate_ials
+        -> train_sweep
         -> select_model
         -> build_faiss
         -> build_deployment_manifest
+        -> publish_model
 
 Configuration comes from two environment variables, because Airflow
 normally runs in its own virtual environment while the pipeline needs the
@@ -105,22 +105,25 @@ PIPELINE_STEPS = [
         ),
     ),
     (
-        "train_ials",
-        "src.models.train_ials",
+        "train_sweep",
+        "src.models.train_sweep",
         "",
-        "Train iALS and log params, metrics and the run ID to MLflow.",
-    ),
-    (
-        "evaluate_ials",
-        "src.evaluation.evaluate_ials",
-        "",
-        "Evaluate the saved artifact and record its metrics.",
+        (
+            "Train and evaluate the declared grid of model families. "
+            "One nested MLflow run per variant under one parent sweep "
+            "run; each variant writes a self-describing candidate "
+            "directory under models/candidates/."
+        ),
     ),
     (
         "select_model",
         "src.deployment.select_model",
         "",
-        "Rank candidates and promote the best deployable model.",
+        (
+            "Rank every discovered candidate, promote the best "
+            "deployable one, and stage its artifact to the canonical "
+            "models/promoted/model.npz."
+        ),
     ),
     (
         "build_faiss",
@@ -133,6 +136,17 @@ PIPELINE_STEPS = [
         "src.deployment.build_manifest",
         "",
         "Record model, run, dataset and artifact versions for serving.",
+    ),
+    (
+        "publish_model",
+        "src.deployment.publish_model",
+        "--only-if-better",
+        (
+            "Log the promoted model to MLflow as a pyfunc bundle, "
+            "register it, and move the @champion alias — but only if it "
+            "beats the current champion, since each version carries the "
+            "whole ~100 MB serving bundle."
+        ),
     ),
 ]
 

@@ -44,10 +44,16 @@ SCHEMA_VERSION = 1
 # Artifact role -> (path on disk, DVC pointer that versions it).
 #
 # The roles match the artifact_paths keys in src/serving/config.py.
+#
+# The model role is deliberately named for its function, not its family.
+# It used to be "ials_model" pointing at models/ials/ials_model.npz, which
+# meant the manifest asserted a family the pipeline is no longer entitled to
+# assume: selection can promote ALS, BPR or LMF. The selection step stages
+# whichever won to this one canonical path.
 ARTIFACTS = {
-    "ials_model": (
-        "models/ials/ials_model.npz",
-        "models/ials.dvc",
+    "promoted_model": (
+        "models/promoted/model.npz",
+        "models/promoted.dvc",
     ),
     "faiss_index": (
         "models/retrieval/faiss.index",
@@ -75,7 +81,7 @@ RAW_DATASET = (
 # Files Cloud Run needs. The interaction dataset is included because the
 # retriever filters items each user has already seen.
 BUNDLE_ROLES = [
-    "ials_model",
+    "promoted_model",
     "faiss_index",
     "faiss_metadata",
     "item_mapping",
@@ -148,6 +154,7 @@ def describe_artifact(
 
 def derive_model_version(
     artifacts: dict[str, dict[str, object]],
+    model_type: str = "model",
 ) -> str:
     """
     Derive a deployable model version from the artifact's content hash.
@@ -156,16 +163,23 @@ def derive_model_version(
     same bytes always produce the same version, and the version can be
     resolved back to an artifact through DVC. An unversioned artifact is
     labelled as such rather than given a fake version number.
+
+    The family prefixes the version so a deployed image tag says which model
+    it holds. That is why ``model_type`` is a parameter rather than the
+    hardcoded ``"ials"`` it once was.
     """
     pointer = artifacts.get(
-        "ials_model",
+        "promoted_model",
         {},
     ).get("dvc")
 
     if not pointer or not pointer.get("md5"):
-        return "ials-unversioned"
+        return f"{model_type}-unversioned"
 
-    return f"ials-{str(pointer['md5'])[:8]}"
+    return (
+        f"{model_type}-"
+        f"{str(pointer['md5'])[:8]}"
+    )
 
 
 def build_serving_env(
@@ -182,8 +196,8 @@ def build_serving_env(
     return {
         "MODEL_TYPE": model_type,
         "MODEL_VERSION": model_version,
-        "IALS_MODEL_PATH": artifacts[
-            "ials_model"
+        "MODEL_PATH": artifacts[
+            "promoted_model"
         ]["path"],
         "FAISS_INDEX_PATH": artifacts[
             "faiss_index"
@@ -246,7 +260,8 @@ def build_manifest(
     )
 
     model_version = derive_model_version(
-        artifacts
+        artifacts,
+        model_type=model_type,
     )
 
     return {
@@ -254,6 +269,12 @@ def build_manifest(
         "generated_at": generated_at,
         "model": {
             "type": model_type,
+            "family": selected.get("family"),
+            "candidate": selected.get("name"),
+            "params": selected.get(
+                "params",
+                {},
+            ),
             "version": model_version,
             "primary_metric": selection.get(
                 "primary_metric"

@@ -8,7 +8,7 @@ from src.serving.app import app
 
 REQUIRED_ARTIFACTS = [
     Path(
-        "models/ials/ials_model.npz"
+        "models/promoted/model.npz"
     ),
     Path(
         "models/retrieval/faiss.index"

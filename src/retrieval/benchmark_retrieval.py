@@ -8,7 +8,8 @@ import numpy as np
 from src.retrieval.faiss_index import FaissRetriever
 
 
-IALS_MODEL_PATH = "models/ials/ials_model.npz"
+# Benchmarks whatever model is currently promoted.
+MODEL_PATH = "models/promoted/model.npz"
 
 INDEX_PATH = "models/retrieval/faiss.index"
 METADATA_PATH = "models/retrieval/index_metadata.json"
@@ -20,7 +21,7 @@ RANDOM_SEED = 42
 
 def load_item_factors() -> np.ndarray:
     with np.load(
-        IALS_MODEL_PATH,
+        MODEL_PATH,
         allow_pickle=False,
     ) as data:
         item_factors = data["item_factors"]

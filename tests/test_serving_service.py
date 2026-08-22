@@ -56,9 +56,12 @@ class TestRecommendationService(
             retriever=FakeRetriever(),
         )
 
+        # The default family is "als" rather than "ials": the service serves
+        # whichever factor model was promoted, and MODEL_TYPE comes from the
+        # deployment manifest in a real deployment.
         self.assertEqual(
             service.model_info.model_type,
-            "ials",
+            "als",
         )
 
         self.assertEqual(

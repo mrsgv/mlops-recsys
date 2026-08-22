@@ -23,7 +23,13 @@ COPY src/serving ./src/serving
 COPY src/retrieval ./src/retrieval
 
 # Runtime model/retrieval artifacts.
-COPY models/ials/ials_model.npz ./models/ials/ials_model.npz
+#
+# The model is copied from the canonical promoted path, not from a
+# family-specific one. Selection stages whichever model won to this path, so
+# the image builds identically whether ALS, BPR or LMF was promoted — the
+# previous COPY of models/ials/ials_model.npz would have baked in iALS no
+# matter what the pipeline actually chose.
+COPY models/promoted/model.npz ./models/promoted/model.npz
 COPY models/retrieval ./models/retrieval
 
 # Runtime data required by IALSFaissRetriever.

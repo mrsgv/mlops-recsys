@@ -7,8 +7,8 @@ from time import perf_counter
 from fastapi import FastAPI, HTTPException
 from prometheus_client import Counter, Histogram, make_asgi_app
 
-from src.retrieval.ials_retriever import (
-    IALSFaissRetriever,
+from src.retrieval.factor_retriever import (
+    FactorFaissRetriever,
 )
 from src.serving.config import settings
 from src.serving.schemas import (
@@ -61,8 +61,8 @@ async def lifespan(
     """
     Load all recommendation artifacts once at application startup.
 
-    This is important for performance: we do not reload iALS,
-    FAISS, or the item mapping on every request.
+    This is important for performance: we do not reload the factor
+    matrices, FAISS, or the item mapping on every request.
     """
     global service
 
@@ -70,9 +70,9 @@ async def lifespan(
         "Loading recommendation artifacts..."
     )
 
-    retriever = IALSFaissRetriever(
-        ials_model_path=(
-            settings.ials_model_path
+    retriever = FactorFaissRetriever(
+        model_path=(
+            settings.model_path
         ),
         faiss_index_path=(
             settings.faiss_index_path
@@ -115,7 +115,7 @@ app = FastAPI(
     title="Video Games Recommendation API",
     description=(
         "Top-K recommendation service using "
-        "iALS + FAISS."
+        "matrix factorisation + FAISS."
     ),
     version="1.0.0",
     lifespan=lifespan,

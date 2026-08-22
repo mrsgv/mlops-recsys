@@ -16,6 +16,11 @@ from src.evaluation.split import (
 )
 from src.models.item_features import ItemFeatureEncoder
 from src.models.negative_sampling import NegativeSampler
+from src.models.tracking import (
+    log_artifacts_safely,
+    mark_artifacts_uploaded,
+    report_upload_outcome,
+)
 from src.models.two_tower_v2 import TwoTowerV2
 
 
@@ -1061,13 +1066,20 @@ def main() -> None:
             best_epoch,
         )
 
-        mlflow.log_artifact(
-            str(MODEL_PATH)
+        # The checkpoint and encoder are already on disk (written above by
+        # torch.save), so an upload failure here can only cost the MLflow
+        # copy. Letting it raise would mark a completed training run FAILED,
+        # which is what happened to run 765681b7.
+        uploaded = log_artifacts_safely(
+            [
+                MODEL_PATH,
+                ENCODER_PATH,
+            ]
         )
 
-        mlflow.log_artifact(
-            str(ENCODER_PATH)
-        )
+        mark_artifacts_uploaded(uploaded)
+
+        report_upload_outcome(uploaded)
 
         print(
             "\n=== Training Complete ==="

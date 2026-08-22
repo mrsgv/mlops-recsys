@@ -14,6 +14,10 @@ from src.evaluation.split import (
     chronological_train_test_split,
     validate_split,
 )
+from src.models.tracking import (
+    mark_artifacts_uploaded,
+    report_upload_outcome,
+)
 from src.models.two_tower import TwoTowerModel
 
 
@@ -359,9 +363,30 @@ def main() -> None:
         # Log final model
         # ---------------------------------------------------------
 
-        mlflow.pytorch.log_model(
-            model,
-            name="two_tower_model",
+        # Guarded for the same reason as every other training entry point: a
+        # transport or credential failure while uploading the weights must
+        # not mark a completed run FAILED and halt the downstream DAG.
+        try:
+            mlflow.pytorch.log_model(
+                model,
+                name="two_tower_model",
+            )
+
+            uploaded = True
+
+        except Exception as error:
+            print(
+                f"WARNING: could not upload the two-tower model to "
+                f"MLflow ({type(error).__name__}: {error})"
+            )
+
+            uploaded = False
+
+        mark_artifacts_uploaded(uploaded)
+
+        report_upload_outcome(
+            uploaded,
+            what="Model weights",
         )
 
 
