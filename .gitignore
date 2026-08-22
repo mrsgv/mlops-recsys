@@ -13,6 +13,10 @@ env/
 data/raw/*
 data/processed/*
 models/*
+!models/deployment/
+models/deployment/*
+!models/deployment/selected_model.json
+!models/deployment/deployment_manifest.json
 
 !data/raw/.gitkeep
 !data/processed/.gitkeep

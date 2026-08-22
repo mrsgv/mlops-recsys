@@ -1,0 +1,139 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-22T09:11:05.792566+00:00",
+  "model": {
+    "type": "ials",
+    "version": "ials-692673e8",
+    "primary_metric": "recall_at_10",
+    "metrics": {
+      "precision_at_10": 0.003806378084042127,
+      "recall_at_10": 0.038063780840421266,
+      "hit_rate_at_10": 0.038063780840421266,
+      "ndcg_at_10": 0.02034783774264646
+    },
+    "users_evaluated": 94762,
+    "mlflow": {
+      "run_id": "f8281a56946841b4be6b09d01164a3c8",
+      "experiment": "ials",
+      "run_name": "ials-v1-binary",
+      "tracking_uri": "http://localhost:18080"
+    },
+    "selection_source": "models/ials/evaluation.json"
+  },
+  "retrieval": {
+    "index_type": "IndexFlatIP",
+    "metric": "inner_product",
+    "normalized_vectors": false,
+    "embedding_dimension": 64,
+    "num_items": 25612,
+    "zero_vector_count": 12
+  },
+  "artifacts": {
+    "ials_model": {
+      "path": "models/ials/ials_model.npz",
+      "exists": true,
+      "is_directory": false,
+      "dvc": {
+        "file": "models/ials.dvc",
+        "md5": "692673e81b1bae964a6647696a22e46b.dir",
+        "size": 30820757,
+        "nfiles": 3
+      }
+    },
+    "faiss_index": {
+      "path": "models/retrieval/faiss.index",
+      "exists": true,
+      "is_directory": false,
+      "dvc": {
+        "file": "models/retrieval.dvc",
+        "md5": "311ee6b6d590e32ed7a5b22b79dd8500.dir",
+        "size": 6557038,
+        "nfiles": 2
+      }
+    },
+    "faiss_metadata": {
+      "path": "models/retrieval/index_metadata.json",
+      "exists": true,
+      "is_directory": false,
+      "dvc": {
+        "file": "models/retrieval.dvc",
+        "md5": "311ee6b6d590e32ed7a5b22b79dd8500.dir",
+        "size": 6557038,
+        "nfiles": 2
+      }
+    },
+    "item_mapping": {
+      "path": "data/processed/item_mapping.parquet",
+      "exists": true,
+      "is_directory": true,
+      "dvc": {
+        "file": "data/processed/item_mapping.parquet.dvc",
+        "md5": "5512d6269bfd14281caf6c318cb6ee29.dir",
+        "size": 306566,
+        "nfiles": 4
+      }
+    },
+    "interactions": {
+      "path": "data/processed/video_games.parquet",
+      "exists": true,
+      "is_directory": true,
+      "dvc": {
+        "file": "data/processed/video_games.parquet.dvc",
+        "md5": "7dfc5ebe082202accaaa456bd254c03e.dir",
+        "size": 11588361,
+        "nfiles": 18
+      }
+    }
+  },
+  "dataset": {
+    "raw_interactions": {
+      "path": "data/raw/Video_Games.csv.gz",
+      "exists": true,
+      "is_directory": false,
+      "dvc": {
+        "file": "data/raw/Video_Games.csv.gz.dvc",
+        "md5": "8a5b4585a0122b29ba8afa496a3f383c",
+        "size": 12801967
+      }
+    },
+    "processed_interactions": {
+      "path": "data/processed/video_games.parquet",
+      "exists": true,
+      "is_directory": true,
+      "dvc": {
+        "file": "data/processed/video_games.parquet.dvc",
+        "md5": "7dfc5ebe082202accaaa456bd254c03e.dir",
+        "size": 11588361,
+        "nfiles": 18
+      }
+    },
+    "item_mapping": {
+      "path": "data/processed/item_mapping.parquet",
+      "exists": true,
+      "is_directory": true,
+      "dvc": {
+        "file": "data/processed/item_mapping.parquet.dvc",
+        "md5": "5512d6269bfd14281caf6c318cb6ee29.dir",
+        "size": 306566,
+        "nfiles": 4
+      }
+    }
+  },
+  "bundle": [
+    "models/ials/ials_model.npz",
+    "models/retrieval/faiss.index",
+    "models/retrieval/index_metadata.json",
+    "data/processed/item_mapping.parquet",
+    "data/processed/video_games.parquet"
+  ],
+  "serving_env": {
+    "MODEL_TYPE": "ials",
+    "MODEL_VERSION": "ials-692673e8",
+    "IALS_MODEL_PATH": "models/ials/ials_model.npz",
+    "FAISS_INDEX_PATH": "models/retrieval/faiss.index",
+    "FAISS_METADATA_PATH": "models/retrieval/index_metadata.json",
+    "ITEM_MAPPING_PATH": "data/processed/item_mapping.parquet",
+    "INTERACTIONS_PATH": "data/processed/video_games.parquet"
+  },
+  "warnings": []
+}

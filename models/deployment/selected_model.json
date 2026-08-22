@@ -1,0 +1,39 @@
+{
+  "primary_metric": "recall_at_10",
+  "selected": {
+    "name": "ials",
+    "model_type": "ials",
+    "metrics": {
+      "precision_at_10": 0.003806378084042127,
+      "recall_at_10": 0.038063780840421266,
+      "hit_rate_at_10": 0.038063780840421266,
+      "ndcg_at_10": 0.02034783774264646
+    },
+    "users_evaluated": 94762,
+    "mlflow": {
+      "run_id": "f8281a56946841b4be6b09d01164a3c8",
+      "experiment": "ials",
+      "run_name": "ials-v1-binary",
+      "tracking_uri": "http://localhost:18080"
+    },
+    "artifacts": {
+      "ials_model": "models/ials/ials_model.npz"
+    },
+    "source": "models/ials/evaluation.json"
+  },
+  "comparison": [
+    {
+      "name": "ials",
+      "model_type": "ials",
+      "deployable": true,
+      "recall_at_10": 0.038063780840421266
+    },
+    {
+      "name": "svd",
+      "model_type": "svd",
+      "deployable": false,
+      "recall_at_10": 0.03745172115404909
+    }
+  ],
+  "notes": []
+}
