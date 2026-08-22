@@ -1,3 +1,33 @@
+"""
+Matrix-factorisation + FAISS candidate retrieval.
+
+This module used to be ``ials_retriever.py`` and was named for the only
+model it was believed to support. That belief was wrong: the retrieval path
+is a raw inner product between a user factor row and an item factor matrix,
+which is precisely what ``IndexFlatIP`` computes, so it serves *any* model
+that exposes ``user_factors`` and ``item_factors``.
+
+That was verified rather than assumed. For ALS, BPR and LMF,
+``argsort(user_vector @ item_factors.T)`` with seen-item filtering
+reproduces the ``implicit`` library's own ``recommend()`` top-K exactly.
+BPR appends one bias column to both factor matrices and LMF two; the inner
+product absorbs them, so the dimension simply differs per family and
+nothing else changes.
+
+The practical consequence is that promoting a different model family
+requires no serving change at all — only a different artifact path, which
+now comes from the deployment manifest instead of a module constant.
+
+Pipeline:
+
+    user_idx
+        -> user factor row
+        -> FAISS candidate search
+        -> drop items seen in training
+        -> Top-K
+        -> item_idx + parent_asin
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -8,7 +38,7 @@ import pandas as pd
 from src.retrieval.faiss_index import FaissRetriever
 
 
-IALS_MODEL_PATH = "models/ials/ials_model.npz"
+MODEL_PATH = "models/promoted/model.npz"
 
 FAISS_INDEX_PATH = (
     "models/retrieval/faiss.index"
@@ -27,35 +57,33 @@ INTERACTIONS_PATH = (
 )
 
 
-class IALSFaissRetriever:
+class FactorFaissRetriever:
     """
-    iALS + FAISS candidate generator.
+    Serve Top-K recommendations from factor matrices and a FAISS index.
 
-    Pipeline:
-
-        user_idx
-            ->
-        iALS user factor
-            ->
-        FAISS candidate search
-            ->
-        remove training-seen items
-            ->
-        Top-K
-            ->
-        item_idx + parent_asin
+    Model-agnostic by construction: it reads factors out of the ``.npz``
+    artifact and never asks which family produced them.
     """
 
     def __init__(
         self,
-        ials_model_path: str = IALS_MODEL_PATH,
+        model_path: str = MODEL_PATH,
         faiss_index_path: str = FAISS_INDEX_PATH,
         faiss_metadata_path: str = FAISS_METADATA_PATH,
         item_mapping_path: str = ITEM_MAPPING_PATH,
         interactions_path: str = INTERACTIONS_PATH,
     ) -> None:
-        self.ials_model_path = Path(
-            ials_model_path
+        self.model_path = Path(model_path)
+
+        # Factors are loaded first, before the index and the 45 MB
+        # interaction parquet. The model artifact is the cheapest thing to
+        # check and the most likely to be wrong — a factorless or missing
+        # model should be reported without first paying to read everything
+        # else.
+        self.user_factors, self.item_factors = (
+            self._load_factors(
+                self.model_path
+            )
         )
 
         self.faiss_index = FaissRetriever.load(
@@ -71,12 +99,6 @@ class IALSFaissRetriever:
             .reset_index(drop=True)
         )
 
-        self.user_factors, self.item_factors = (
-            self._load_ials_factors(
-                self.ials_model_path
-            )
-        )
-
         self.user_history = (
             self._load_user_history(
                 interactions_path
@@ -86,18 +108,42 @@ class IALSFaissRetriever:
         self._validate_consistency()
 
     @staticmethod
-    def _load_ials_factors(
+    def _load_factors(
         path: Path,
     ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Read user and item factors from a saved model artifact.
+
+        A neighbourhood model's artifact has no factor arrays, so this is
+        also the check that a non-servable model was never promoted by
+        mistake — it fails loudly at startup rather than at first request.
+        """
         if not path.exists():
             raise FileNotFoundError(
-                f"iALS model not found: {path}"
+                f"Model artifact not found: {path}"
             )
 
         with np.load(
             path,
             allow_pickle=False,
         ) as data:
+            missing = [
+                key
+                for key in (
+                    "user_factors",
+                    "item_factors",
+                )
+                if key not in data
+            ]
+
+            if missing:
+                raise ValueError(
+                    f"Model artifact {path} has no "
+                    f"{' or '.join(missing)}. Only "
+                    "factor-based models can be served through "
+                    "the FAISS retrieval path."
+                )
+
             user_factors = np.asarray(
                 data["user_factors"],
                 dtype=np.float32,
@@ -136,7 +182,7 @@ class IALSFaissRetriever:
         Load all training interaction history.
 
         This is used to reproduce the same seen-item filtering
-        semantics as the offline iALS evaluation.
+        semantics as the offline evaluation.
         """
         df = pd.read_parquet(
             path,
@@ -167,12 +213,23 @@ class IALSFaissRetriever:
             )
 
         if (
+            self.faiss_index.dimension
+            != item_dim
+        ):
+            raise ValueError(
+                "FAISS index dimension "
+                f"({self.faiss_index.dimension}) does not match "
+                f"the model's factor dimension ({item_dim}). "
+                "Rebuild the index from the promoted model."
+            )
+
+        if (
             self.faiss_index.num_items
             != num_items
         ):
             raise ValueError(
                 "FAISS index size does not match "
-                "iALS item factors."
+                "the model's item factors."
             )
 
         if (
@@ -181,7 +238,7 @@ class IALSFaissRetriever:
         ):
             raise ValueError(
                 "Item mapping size does not match "
-                "iALS item factors."
+                "the model's item factors."
             )
 
         expected_item_ids = list(

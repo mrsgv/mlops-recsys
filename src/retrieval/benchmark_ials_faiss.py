@@ -8,13 +8,15 @@ from src.models.ials_baseline import (
     IALSRecommender,
 )
 
-from src.retrieval.ials_retriever import (
-    IALSFaissRetriever,
+from src.retrieval.factor_retriever import (
+    FactorFaissRetriever,
 )
 
 
+# Compares direct ALS scoring against the FAISS path, so it reads the
+# promoted artifact and assumes it is an ALS model.
 MODEL_PATH = (
-    "models/ials/ials_model.npz"
+    "models/promoted/model.npz"
 )
 
 TOP_K = 10
@@ -59,7 +61,7 @@ def main() -> None:
     # ---------------------------------------------------------
 
     faiss_retriever = (
-        IALSFaissRetriever()
+        FactorFaissRetriever()
     )
 
     # ---------------------------------------------------------

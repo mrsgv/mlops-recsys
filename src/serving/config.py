@@ -8,13 +8,21 @@ class Settings:
     """
     Runtime configuration for the recommendation API.
 
-    Environment variables can override the defaults, which will
-    be useful later for Docker and Cloud Run.
+    Environment variables override the defaults, which is how the
+    deployment manifest configures a Cloud Run instance: the manifest's
+    ``serving_env`` block is exactly this set of variables.
+
+    ``MODEL_PATH`` points at the canonical promoted artifact rather than at
+    a family-specific path. It replaced ``IALS_MODEL_PATH``, which asserted
+    a model family the pipeline no longer fixes — selection may promote ALS,
+    BPR or LMF, and all three are served by the same code. The old name is
+    still honoured so an in-flight container configured with it keeps
+    working.
     """
 
     model_type: str = os.getenv(
         "MODEL_TYPE",
-        "ials",
+        "als",
     )
 
     model_version: str = os.getenv(
@@ -22,9 +30,12 @@ class Settings:
         "1",
     )
 
-    ials_model_path: str = os.getenv(
-        "IALS_MODEL_PATH",
-        "models/ials/ials_model.npz",
+    model_path: str = os.getenv(
+        "MODEL_PATH",
+        os.getenv(
+            "IALS_MODEL_PATH",
+            "models/promoted/model.npz",
+        ),
     )
 
     faiss_index_path: str = os.getenv(
@@ -57,8 +68,8 @@ class Settings:
     @property
     def artifact_paths(self) -> dict[str, Path]:
         return {
-            "ials_model": Path(
-                self.ials_model_path
+            "promoted_model": Path(
+                self.model_path
             ),
             "faiss_index": Path(
                 self.faiss_index_path

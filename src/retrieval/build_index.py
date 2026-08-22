@@ -1,5 +1,28 @@
+"""
+Build the FAISS index from the promoted model's item factors.
+
+Previously this step read ``models/ials/ials_model.npz`` from a module
+constant, which meant the index was always built from iALS no matter which
+model the selection step had chosen. Selection and indexing could therefore
+disagree silently: the pipeline would report promoting one model while
+serving the item factors of another.
+
+The index is now built from the canonical promoted artifact that the
+selection step writes, and the metadata records which family and
+hyperparameters produced it — so a mismatch becomes visible rather than
+invisible.
+
+IMPORTANT
+---------
+The index must NOT normalize vectors. Every supported factor model ranks by
+raw inner product between a user factor row and an item factor row, and
+normalizing item vectors would discard the magnitude that encodes item
+popularity and, for BPR and LMF, the bias column.
+"""
+
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -11,8 +34,12 @@ from src.retrieval.faiss_index import (
 )
 
 
-IALS_MODEL_PATH = (
-    "models/ials/ials_model.npz"
+PROMOTED_MODEL_PATH = (
+    "models/promoted/model.npz"
+)
+
+SELECTION_PATH = (
+    "models/deployment/selected_model.json"
 )
 
 ITEM_MAPPING_PATH = (
@@ -32,31 +59,38 @@ METADATA_PATH = (
 )
 
 
-def load_ials_item_factors(
+def load_item_factors(
     path: str,
 ) -> np.ndarray:
     """
-    Load item factors from the iALS .npz artifact.
+    Load item factors from a model's ``.npz`` artifact.
 
     Expected shape:
         (num_items, factors)
-    """
-    path = Path(path)
 
-    if not path.exists():
+    A neighbourhood model's artifact has no ``item_factors`` array, so the
+    absence of the key is reported as "this model cannot be served" rather
+    than as a generic missing-key error.
+    """
+    resolved = Path(path)
+
+    if not resolved.exists():
         raise FileNotFoundError(
-            f"iALS model not found: {path}"
+            f"Promoted model not found: {resolved}. "
+            "Run the selection step first."
         )
 
     with np.load(
-        path,
+        resolved,
         allow_pickle=False,
     ) as data:
 
         if "item_factors" not in data:
             raise ValueError(
-                "iALS artifact does not contain "
-                "'item_factors'."
+                f"Model artifact {resolved} contains no "
+                "'item_factors', so no inner-product index can be "
+                "built from it. Only factor-based models are "
+                "servable."
             )
 
         item_factors = np.asarray(
@@ -82,6 +116,25 @@ def load_ials_item_factors(
         )
 
     return item_factors
+
+
+def load_selection(
+    path: str = SELECTION_PATH,
+) -> dict[str, object]:
+    """
+    Read the promotion decision so the index can record its provenance.
+
+    Returns an empty dict when absent: the index is still buildable from a
+    promoted artifact alone, it just carries less provenance.
+    """
+    resolved = Path(path)
+
+    if not resolved.exists():
+        return {}
+
+    return json.loads(
+        resolved.read_text()
+    )
 
 
 def load_and_validate_mapping(
@@ -143,21 +196,82 @@ def load_and_validate_mapping(
     return mapping
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Build the FAISS index from the promoted model."
+        )
+    )
+
+    parser.add_argument(
+        "--model",
+        default=PROMOTED_MODEL_PATH,
+        help=(
+            "Model artifact to index. Defaults to the canonical "
+            "promoted artifact."
+        ),
+    )
+
+    parser.add_argument(
+        "--selection",
+        default=SELECTION_PATH,
+        help=(
+            "Selection record, read for index provenance."
+        ),
+    )
+
+    parser.add_argument(
+        "--item-mapping",
+        default=ITEM_MAPPING_PATH,
+        help="item_idx -> parent_asin mapping.",
+    )
+
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
+
     print("=" * 60)
     print(
-        "Building FAISS Index from iALS Item Factors"
+        "Building FAISS Index from Promoted Item Factors"
     )
     print("=" * 60)
 
     # ---------------------------------------------------------
-    # 1. Load item factors
+    # 1. Provenance
     # ---------------------------------------------------------
 
-    item_factors = (
-        load_ials_item_factors(
-            IALS_MODEL_PATH
-        )
+    selection = load_selection(
+        args.selection
+    )
+
+    selected = selection.get(
+        "selected",
+        {},
+    )
+
+    model_name = selected.get(
+        "name",
+        "unknown",
+    )
+
+    model_family = selected.get(
+        "family",
+        "unknown",
+    )
+
+    print(
+        f"\nPromoted model: {model_name} "
+        f"(family={model_family})"
+    )
+
+    # ---------------------------------------------------------
+    # 2. Load item factors
+    # ---------------------------------------------------------
+
+    item_factors = load_item_factors(
+        args.model
     )
 
     num_items, dimension = (
@@ -170,24 +284,18 @@ def main() -> None:
     )
 
     # ---------------------------------------------------------
-    # 2. Load item mapping
+    # 3. Load item mapping
     # ---------------------------------------------------------
 
     load_and_validate_mapping(
-        ITEM_MAPPING_PATH,
+        args.item_mapping,
         num_items,
     )
 
     # ---------------------------------------------------------
-    # 3. Build FAISS index
+    # 4. Build FAISS index
     # ---------------------------------------------------------
 
-    # IMPORTANT:
-    # iALS ranks using raw inner product:
-    #
-    #     user_factor @ item_factor
-    #
-    # Therefore the FAISS index must NOT normalize vectors.
     retriever = FaissRetriever(
         dimension=dimension,
         metric="inner_product",
@@ -214,13 +322,19 @@ def main() -> None:
     )
 
     # ---------------------------------------------------------
-    # 4. Build metadata
+    # 5. Build metadata
     # ---------------------------------------------------------
 
     metadata = {
-        "model_type": "ials",
-        "model_artifact": IALS_MODEL_PATH,
-        "item_mapping": ITEM_MAPPING_PATH,
+        "model_name": model_name,
+        "model_type": model_family,
+        "model_family": model_family,
+        "model_params": selected.get(
+            "params",
+            {},
+        ),
+        "model_artifact": args.model,
+        "item_mapping": args.item_mapping,
         "embedding_dimension": dimension,
         "num_items": num_items,
         "metric": "inner_product",
@@ -229,10 +343,14 @@ def main() -> None:
         "zero_vector_count": (
             retriever.zero_vector_count
         ),
+        "mlflow": selected.get(
+            "mlflow",
+            {},
+        ),
     }
 
     # ---------------------------------------------------------
-    # 5. Save
+    # 6. Save
     # ---------------------------------------------------------
 
     INDEX_DIR.mkdir(

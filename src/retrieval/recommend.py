@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 
-from src.retrieval.ials_retriever import (
-    IALSFaissRetriever,
+from src.retrieval.factor_retriever import (
+    FactorFaissRetriever,
 )
 
 
@@ -36,7 +36,7 @@ def main() -> None:
     args = parse_args()
 
     retriever = (
-        IALSFaissRetriever()
+        FactorFaissRetriever()
     )
 
     result = retriever.recommend(

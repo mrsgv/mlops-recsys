@@ -32,11 +32,11 @@ EXPECTED_TASK_ORDER = [
     "validate_raw_data",
     "preprocess",
     "validate_processed_data",
-    "train_ials",
-    "evaluate_ials",
+    "train_sweep",
     "select_model",
     "build_faiss",
     "build_deployment_manifest",
+    "publish_model",
 ]
 
 

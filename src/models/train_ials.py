@@ -14,6 +14,17 @@ from src.evaluation.split import (
 )
 from src.models.ials_baseline import IALSRecommender
 
+# Re-exported so this module keeps a single source of truth for upload
+# safety. The helpers live in src/models/tracking.py because every training
+# entry point needs them: defining them per model family is how the bug that
+# lost run 765681b7 would come back.
+from src.models.tracking import (  # noqa: F401
+    log_artifact_safely,
+    log_artifacts_safely,
+    mark_artifacts_uploaded,
+    report_upload_outcome,
+)
+
 
 DATA_PATH = "data/processed/video_games.parquet"
 
@@ -132,6 +143,71 @@ def write_training_run(
     )
 
     return record
+
+
+def persist_training_outputs(
+    model: IALSRecommender,
+    run_id: str,
+    params: dict[str, object],
+    metrics: dict[str, float | int],
+    training_time_seconds: float,
+) -> bool:
+    """
+    Save the model, write the lineage record, then upload — in that order.
+
+    The order is the contract. ``training_run.json`` is what every downstream
+    stage reads to find the run that produced the artifact, so it must reach
+    disk before any network call is attempted. Uploading first meant a failed
+    upload left no record at all, marked the run FAILED, and stopped the
+    pipeline at the first task after training.
+
+    Must be called inside an active MLflow run.
+
+    Returns
+    -------
+    bool
+        True if every artifact reached MLflow.
+    """
+    MODEL_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    model.model.save(
+        str(MODEL_PATH)
+    )
+
+    print(
+        f"\nModel saved to: "
+        f"{MODEL_PATH}"
+    )
+
+    write_training_run(
+        run_id=run_id,
+        params=params,
+        metrics=metrics,
+        training_time_seconds=training_time_seconds,
+    )
+
+    print(
+        f"Run metadata saved to: "
+        f"{TRAINING_RUN_PATH}"
+    )
+
+    uploaded = log_artifacts_safely(
+        [
+            MODEL_PATH,
+            TRAINING_RUN_PATH,
+        ]
+    )
+
+    # Recorded as a tag so a run whose artifacts are missing is identifiable
+    # in the UI rather than silently incomplete.
+    mark_artifacts_uploaded(uploaded)
+
+    report_upload_outcome(uploaded)
+
+    return uploaded
 
 
 def main() -> None:
@@ -401,45 +477,15 @@ def main() -> None:
         )
 
         # -----------------------------------------------------
-        # 9. Save model
+        # 9. Persist the model, the run record and the artifacts
         # -----------------------------------------------------
 
-        MODEL_DIR.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        model.model.save(
-            str(MODEL_PATH)
-        )
-
-        mlflow.log_artifact(
-            str(MODEL_PATH)
-        )
-
-        print(
-            f"\nModel saved to: "
-            f"{MODEL_PATH}"
-        )
-
-        # -----------------------------------------------------
-        # 10. Record the run alongside the artifact
-        # -----------------------------------------------------
-
-        write_training_run(
+        persist_training_outputs(
+            model=model,
             run_id=run_id,
             params=params,
             metrics=metrics,
             training_time_seconds=training_time,
-        )
-
-        mlflow.log_artifact(
-            str(TRAINING_RUN_PATH)
-        )
-
-        print(
-            f"Run metadata saved to: "
-            f"{TRAINING_RUN_PATH}"
         )
 
     print("\n=== iALS Benchmark Complete ===")
