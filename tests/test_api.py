@@ -232,6 +232,54 @@ class TestAPI(unittest.TestCase):
             response.status_code,
             422,
         )
+    
+    def test_metrics_endpoint(self):
+        response = self.client.get("/metrics")
+
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        self.assertIn(
+            "recommendation_requests_total",
+            response.text,
+        )
+
+        self.assertIn(
+            "recommendation_errors_total",
+            response.text,
+        )
+
+        self.assertIn(
+            "recommendation_latency_seconds",
+            response.text,
+        )
+
+        self.assertIn(
+            "recommendation_results_total",
+            response.text,
+        )
+
+    def test_metrics_change_after_recommendation(self):
+        before = self.client.get("/metrics")
+        self.assertEqual(before.status_code, 200)
+
+        self.client.post(
+            "/recommend",
+            json={
+                "user_idx": 0,
+                "k": 10,
+            },
+        )
+
+        after = self.client.get("/metrics")
+        self.assertEqual(after.status_code, 200)
+
+        self.assertIn(
+            "recommendation_requests_total",
+            after.text,
+        )
 
 
 if __name__ == "__main__":
